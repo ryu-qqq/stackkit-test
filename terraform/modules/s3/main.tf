@@ -48,6 +48,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "main" {
     content {
       id     = rule.value.id
       status = rule.value.status
+      
+      filter {
+        prefix = lookup(rule.value, "prefix", "")
+      }
 
       dynamic "expiration" {
         for_each = lookup(rule.value, "expiration", null) != null ? [rule.value.expiration] : []

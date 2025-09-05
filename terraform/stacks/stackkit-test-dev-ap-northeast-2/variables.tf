@@ -8,7 +8,7 @@ variable "environment" {
   description = "환경 (dev|prod)"
   validation {
     condition     = contains(["dev", "prod"], var.environment)
-    error_message = "environment must be one of dev|prod."
+    error_message = "Environment must be one of 'dev' or 'prod'."
   }
 }
 
