@@ -45,7 +45,7 @@ module "test_bucket" {
   bucket_name        = "test-logs"
   versioning_enabled = true
 
-  # 라이프사이클 규칙 - 30일 후 IA로 이동 (AWS 권한 수정 후 테스트)
+  # 라이프사이클 규칙 - 30일 후 IA로 이동 (ECS IAM/Terraform v1.7.5 적용 테스트)
   lifecycle_rules = [
     {
       id     = "logs_lifecycle"
