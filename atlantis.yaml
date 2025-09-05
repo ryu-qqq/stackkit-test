@@ -1,11 +1,11 @@
 version: 3
 projects:
-- name: stackkit-test-dev-ap-northeast-2
-  dir: terraform/stacks/stackkit-test-dev-ap-northeast-2
+- name: stackkit-test-.
+  dir: .
   terraform_version: v1.7.5
   autoplan:
     when_modified: ["**/*.tf", "**/*.tfvars"]
-    enabled: true
+    enabled: false
   apply_requirements: ["approved", "mergeable"]
   delete_source_branch_on_merge: false
   workflow: ai-review
@@ -15,15 +15,10 @@ workflows:
     plan:
       steps:
       - init
+      - plan:
+          extra_args: ["-lock-timeout=10m", "-out=$PLANFILE"]
       - run: |
-          # Plan with error handling for AI review
-          set +e  # Don't exit on error - we want to capture failures
-          terraform plan -input=false -refresh -no-color -out "$PLANFILE" -lock-timeout=10m
-          PLAN_EXIT_CODE=$?
-          set -e  # Re-enable exit on error
-          
-      - run: |
-          set -e
+          set -e  # Don't exit on error initially
 
           # Extract repo and PR info from environment
           REPO_ORG=$(echo "$BASE_REPO_OWNER" | tr '[:upper:]' '[:lower:]')
@@ -45,12 +40,10 @@ workflows:
 
             # Convert plan to JSON and upload
             terraform show -json "$PLANFILE" > plan.json
-            aws s3 cp plan.json "s3://${AI_REVIEW_BUCKET}/${S3_PATH}/plan.json" \
-              --metadata "${RESULT_META}"
+            aws s3 cp plan.json "s3://connectly-prod/${S3_PATH}/plan.json"               --metadata "${RESULT_META}"
 
             # Upload plan file as well for debugging
-            aws s3 cp "$PLANFILE" "s3://${AI_REVIEW_BUCKET}/${S3_PATH}/plan.tfplan" \
-              --metadata "${RESULT_META}"
+            aws s3 cp "$PLANFILE" "s3://connectly-prod/${S3_PATH}/plan.tfplan"               --metadata "${RESULT_META}"
 
           else
             echo "❌ Plan failed - uploading error context for AI analysis"
@@ -61,8 +54,7 @@ workflows:
             echo "$ERROR_CONTEXT" > plan_error.json
 
             # Upload error context
-            aws s3 cp plan_error.json "s3://${AI_REVIEW_BUCKET}/${S3_PATH}/plan_error.json" \
-              --metadata "${RESULT_META}"
+            aws s3 cp plan_error.json "s3://connectly-prod/${S3_PATH}/plan_error.json"               --metadata "${RESULT_META}"
           fi
 
           echo "📤 Plan result uploaded to S3: ${S3_PATH}/"
@@ -102,8 +94,7 @@ workflows:
             echo "$APPLY_RESULT" > apply_result.json
 
             # Upload apply results
-            aws s3 cp apply_result.json "s3://${AI_REVIEW_BUCKET}/${S3_PATH}/apply_result.json" \
-              --metadata "${APPLY_META}"
+            aws s3 cp apply_result.json "s3://connectly-prod/${S3_PATH}/apply_result.json"               --metadata "${APPLY_META}"
 
           else
             echo "❌ Apply failed - uploading error context"
@@ -114,8 +105,7 @@ workflows:
             echo "$APPLY_ERROR" > apply_error.json
 
             # Upload error context
-            aws s3 cp apply_error.json "s3://${AI_REVIEW_BUCKET}/${S3_PATH}/apply_error.json" \
-              --metadata "${APPLY_META}"
+            aws s3 cp apply_error.json "s3://connectly-prod/${S3_PATH}/apply_error.json"               --metadata "${APPLY_META}"
           fi
 
           echo "📤 Apply result uploaded to S3: ${S3_PATH}/"

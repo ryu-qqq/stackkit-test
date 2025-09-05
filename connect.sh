@@ -91,7 +91,7 @@ PROJECT_DIR="."
 GITHUB_TOKEN=""
 WEBHOOK_SECRET=""
 SECRET_NAME=""
-TF_VERSION="1.8.5"
+TF_VERSION="1.7.5"
 TF_STACK_REGION="${TF_STACK_REGION:-ap-northeast-2}"
 AWS_REGION="${TF_STACK_REGION}"
 AUTO_PLAN=false
@@ -558,10 +558,10 @@ EOF
         -H "Accept: application/vnd.github.v3+json" \
         "https://api.github.com/repos/$REPO_NAME/hooks" | \
         jq -r ".[] | select(.config.url == \"$webhook_url\") | .id" 2>/dev/null || echo "")
-    
+
     if [[ -n "$existing_webhook" ]]; then
         log_success "기존 웹훅 발견 (ID: $existing_webhook). 시크릿을 업데이트합니다."
-        
+
         # Update existing webhook with new secret
         local response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
             -H "Authorization: token $GITHUB_TOKEN" \
@@ -572,7 +572,7 @@ EOF
             "https://api.github.com/repos/$REPO_NAME/hooks/$existing_webhook")
     else
         log_info "새 웹훅을 생성합니다."
-        
+
         # Create new webhook
         local response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
             -H "Authorization: token $GITHUB_TOKEN" \
@@ -639,9 +639,9 @@ setup_github_variables() {
     echo "$variables_config" | jq -c '.[]' | while IFS= read -r var; do
         name=$(echo "$var" | jq -r '.name')
         value=$(echo "$var" | jq -r '.value')
-        
+
         log_info "변수 설정 중: $name = $value"
-        
+
         # Set repository variable
         local response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
             -H "Authorization: token $GITHUB_TOKEN" \
@@ -667,7 +667,7 @@ setup_github_variables() {
                     -X PATCH \
                     -d "{\"name\":\"$name\",\"value\":\"$value\"}" \
                     "https://api.github.com/repos/$REPO_NAME/actions/variables/$name")
-                
+
                 local update_status=$(echo "$update_response" | grep "HTTP_STATUS:" | cut -d: -f2)
                 if [[ "$update_status" == "204" ]]; then
                     log_success "GitHub Variable '$name' 업데이트 완료"
