@@ -45,7 +45,7 @@ module "test_bucket" {
   bucket_name        = "test-logs"
   versioning_enabled = true
 
-  # 라이프사이클 규칙 - 45일 후 IA로 이동 (테스트 변경)
+  # 라이프사이클 규칙 - 60일 후 IA로 이동 (when_modified 패턴 테스트)
   lifecycle_rules = [
     {
       id     = "logs_lifecycle"
