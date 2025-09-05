@@ -44,9 +44,6 @@ Usage: $0 [OPTIONS]
 StackKit 표준 변수 지원:
     환경변수 TF_STACK_REGION    AWS 리전 (기본: ap-northeast-2)
     환경변수 ATLANTIS_*         GitHub Secrets의 ATLANTIS_ 접두사 변수들
-    환경변수 OPENAI_API_KEY     OpenAI API 키 (AI 리뷰어용)
-    환경변수 SLACK_WEBHOOK_URL  Slack 웹훅 URL
-    환경변수 INFRACOST_API_KEY  Infracost API 키
 
 Options:
     --atlantis-url URL      Atlantis 서버 URL (필수)
@@ -61,8 +58,6 @@ Options:
     --skip-webhook         웹훅 설정 건너뛰기
     --enable-ai-reviewer   AI 리뷰어 활성화
     --ai-review-bucket     AI 리뷰용 S3 버킷 이름
-    --openai-key           OpenAI API 키 (OPENAI_API_KEY 우선)
-    --slack-webhook        Slack 웹훅 URL (SLACK_WEBHOOK_URL 우선)
     --help                 이 도움말 표시
 
 Examples:
@@ -71,12 +66,12 @@ Examples:
        --repo-name myorg/myrepo \\
        --github-token ghp_xxxxxxxxxxxx \\
        --secret-name prod-atlantis-secrets
-    
+
     # 웹훅 설정 없이 설정 파일만 생성
     $0 --atlantis-url https://atlantis.company.com \\
        --repo-name myorg/myrepo \\
        --skip-webhook
-    
+
     # AI 리뷰어와 함께 설정
     $0 --atlantis-url https://atlantis.company.com \\
        --repo-name myorg/myrepo \\
@@ -84,6 +79,8 @@ Examples:
        --secret-name prod-atlantis-secrets \\
        --enable-ai-reviewer \\
        --ai-review-bucket my-ai-review-bucket
+
+    # 참고: OpenAI/Slack 키는 quick-deploy.sh에서 설정됩니다
 EOF
 }
 
@@ -105,9 +102,6 @@ AI_REVIEW_BUCKET=""
 
 # StackKit 호환 - 환경변수에서 값 읽기 (GitHub Actions/Secrets용)
 ATLANTIS_GITHUB_TOKEN="${ATLANTIS_GITHUB_TOKEN:-$GITHUB_TOKEN}"
-OPENAI_API_KEY="${OPENAI_API_KEY:-}"
-SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_URL:-}"
-INFRACOST_API_KEY="${INFRACOST_API_KEY:-}"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -124,8 +118,6 @@ while [[ $# -gt 0 ]]; do
         --skip-webhook) SKIP_WEBHOOK=true; shift ;;
         --enable-ai-reviewer) ENABLE_AI_REVIEWER=true; shift ;;
         --ai-review-bucket) AI_REVIEW_BUCKET="$2"; shift 2 ;;
-        --openai-key) OPENAI_API_KEY="$2"; shift 2 ;;
-        --slack-webhook) SLACK_WEBHOOK_URL="$2"; shift 2 ;;
         --help) show_help; exit 0 ;;
         *) echo "Unknown option: $1"; show_help; exit 1 ;;
     esac
@@ -146,7 +138,7 @@ if [[ -z "$REPO_NAME" ]]; then
             log_info "GitHub remote에서 저장소 이름 자동 탐지: $REPO_NAME"
         fi
     fi
-    
+
     if [[ -z "$REPO_NAME" ]]; then
         log_error "저장소 이름이 필요합니다."
         show_help
@@ -170,28 +162,28 @@ sync_webhook_secret() {
     if [[ -z "$WEBHOOK_SECRET" ]]; then
         if [[ -n "$SECRET_NAME" ]]; then
             log_info "Atlantis Secrets Manager에서 웹훅 시크릿 조회 중..."
-            
+
             # AWS CLI 사용 가능한지 확인
             if ! command -v aws >/dev/null 2>&1; then
                 log_warning "AWS CLI가 설치되지 않았습니다. 새 시크릿을 생성합니다."
                 WEBHOOK_SECRET=$(openssl rand -hex 20)
                 return
             fi
-            
+
             # 기존 시크릿에서 webhook_secret 조회
             EXISTING_SECRET=$(aws secretsmanager get-secret-value \
                 --region "$AWS_REGION" \
                 --secret-id "$SECRET_NAME" \
                 --query 'SecretString' \
                 --output text 2>/dev/null | jq -r '.webhook_secret // empty' 2>/dev/null)
-            
+
             if [[ -n "$EXISTING_SECRET" && "$EXISTING_SECRET" != "null" ]]; then
                 WEBHOOK_SECRET="$EXISTING_SECRET"
                 log_success "기존 Atlantis 웹훅 시크릿 사용: ${WEBHOOK_SECRET:0:8}..."
             else
                 log_warning "기존 웹훅 시크릿을 찾을 수 없습니다. 새 시크릿을 생성합니다."
                 WEBHOOK_SECRET=$(openssl rand -hex 20)
-                
+
                 # Secrets Manager 업데이트
                 update_secrets_manager
             fi
@@ -206,23 +198,23 @@ sync_webhook_secret() {
 update_secrets_manager() {
     if [[ -n "$SECRET_NAME" ]] && command -v aws >/dev/null 2>&1; then
         log_info "Atlantis Secrets Manager에 웹훅 시크릿 업데이트 중..."
-        
+
         # 현재 시크릿 값 조회
         CURRENT_SECRET=$(aws secretsmanager get-secret-value \
             --region "$AWS_REGION" \
             --secret-id "$SECRET_NAME" \
             --query 'SecretString' \
             --output text 2>/dev/null)
-        
+
         if [[ -n "$CURRENT_SECRET" ]]; then
             # 기존 시크릿에 webhook_secret 추가/업데이트
             UPDATED_SECRET=$(echo "$CURRENT_SECRET" | jq --arg secret "$WEBHOOK_SECRET" '. + {"webhook_secret": $secret}')
-            
+
             aws secretsmanager update-secret \
                 --region "$AWS_REGION" \
                 --secret-id "$SECRET_NAME" \
                 --secret-string "$UPDATED_SECRET" >/dev/null 2>&1
-            
+
             if [[ $? -eq 0 ]]; then
                 log_success "Atlantis Secrets Manager 웹훅 시크릿 업데이트 완료"
             else
@@ -247,13 +239,13 @@ if [[ "$SKIP_WEBHOOK" == false ]]; then
         log_info "웹훅 설정을 건너뛰려면 --skip-webhook을 사용하세요."
         SKIP_WEBHOOK=true
     fi
-    
+
     # Check if curl/jq are available
     if ! command -v curl >/dev/null 2>&1; then
         log_warning "curl이 설치되지 않았습니다. 웹훅 설정을 건너뜁니다."
         SKIP_WEBHOOK=true
     fi
-    
+
     if ! command -v jq >/dev/null 2>&1; then
         log_warning "jq가 설치되지 않았습니다. 웹훅 설정을 건너뜁니다."
         SKIP_WEBHOOK=true
@@ -271,15 +263,7 @@ echo "  웹훅 자동 설정: $([ "$SKIP_WEBHOOK" == false ] && echo "활성화"
 echo "  AI 리뷰어: $([ "$ENABLE_AI_REVIEWER" == true ] && echo "활성화" || echo "비활성화")"
 if [[ "$ENABLE_AI_REVIEWER" == true ]]; then
     echo "  AI 리뷰 S3 버킷: $AI_REVIEW_BUCKET"
-fi
-if [[ -n "$OPENAI_API_KEY" ]]; then
-    echo "  OpenAI: 활성화 (${OPENAI_API_KEY:0:8}...)"
-fi
-if [[ -n "$SLACK_WEBHOOK_URL" ]]; then
-    echo "  Slack 알림: 활성화"
-fi
-if [[ -n "$INFRACOST_API_KEY" ]]; then
-    echo "  Infracost: 활성화 (${INFRACOST_API_KEY:0:8}...)"
+    echo "  ※ OpenAI/Slack 키는 quick-deploy.sh에서 설정됨"
 fi
 if [[ -n "$SECRET_NAME" ]]; then
     echo "  Secrets Manager: $SECRET_NAME"
@@ -329,30 +313,103 @@ workflows:
       - plan:
           extra_args: ["-lock-timeout=10m", "-out=\$PLANFILE"]
       - run: |
-          set -euo pipefail
-          
+          set -e  # Don't exit on error initially
+
           # Extract repo and PR info from environment
           REPO_ORG=\$(echo "\$BASE_REPO_OWNER" | tr '[:upper:]' '[:lower:]')
           REPO_NAME=\$(echo "\$BASE_REPO_NAME" | tr '[:upper:]' '[:lower:]')
           PR_NUM=\$PULL_NUM
           COMMIT_SHA=\$(echo "\$HEAD_COMMIT" | cut -c1-8)
-          
+          TIMESTAMP=\$(date -u +%Y%m%d%H%M%S)
+
           # Generate S3 path for organized storage
           S3_PATH="terraform-plans/\${REPO_ORG}/\${REPO_NAME}/\${PR_NUM}/\${COMMIT_SHA}"
-          
-          # Convert plan to JSON and upload to S3 for AI analysis
-          terraform show -json "\$PLANFILE" > plan.json
-          
-          # Upload to S3 with metadata
-          aws s3 cp plan.json "s3://${AI_REVIEW_BUCKET}/\${S3_PATH}/plan.json" \
-            --metadata "repo=\${REPO_ORG}/\${REPO_NAME},pr=\${PR_NUM},commit=\${COMMIT_SHA},timestamp=\$(date -u +%Y%m%d%H%M%S)"
-          
-          echo "📤 Plan uploaded to S3 for AI review: \${S3_PATH}/plan.json"
+
+          # Create result metadata
+          RESULT_META="{\"repo\":\"\${REPO_ORG}/\${REPO_NAME}\",\"pr\":\${PR_NUM},\"commit\":\"\${COMMIT_SHA}\",\"timestamp\":\"\${TIMESTAMP}\",\"operation\":\"plan\""
+
+          # Check if plan was successful by checking planfile existence
+          if [ -f "\$PLANFILE" ]; then
+            echo "✅ Plan succeeded - uploading results for AI analysis"
+            RESULT_META="\${RESULT_META},\"status\":\"success\"}"
+
+            # Convert plan to JSON and upload
+            terraform show -json "\$PLANFILE" > plan.json
+            aws s3 cp plan.json "s3://${AI_REVIEW_BUCKET}/\${S3_PATH}/plan.json" \
+              --metadata "\${RESULT_META}"
+
+            # Upload plan file as well for debugging
+            aws s3 cp "\$PLANFILE" "s3://${AI_REVIEW_BUCKET}/\${S3_PATH}/plan.tfplan" \
+              --metadata "\${RESULT_META}"
+
+          else
+            echo "❌ Plan failed - uploading error context for AI analysis"
+            RESULT_META="\${RESULT_META},\"status\":\"failed\"}"
+
+            # Create error context file
+            ERROR_CONTEXT="{\"error\":\"Plan failed\",\"timestamp\":\"\${TIMESTAMP}\",\"logs\":\"Plan execution failed - check Atlantis logs\"}"
+            echo "\$ERROR_CONTEXT" > plan_error.json
+
+            # Upload error context
+            aws s3 cp plan_error.json "s3://${AI_REVIEW_BUCKET}/\${S3_PATH}/plan_error.json" \
+              --metadata "\${RESULT_META}"
+          fi
+
+          echo "📤 Plan result uploaded to S3: \${S3_PATH}/"
           echo "🤖 AI will analyze and comment on this PR shortly..."
+
+          # Re-enable strict error handling for any subsequent steps
+          set -euo pipefail
     apply:
       steps:
       - apply:
           extra_args: ["-lock-timeout=10m"]
+      - run: |
+          set -e
+
+          # Extract repo and PR info from environment
+          REPO_ORG=\$(echo "\$BASE_REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          REPO_NAME=\$(echo "\$BASE_REPO_NAME" | tr '[:upper:]' '[:lower:]')
+          PR_NUM=\$PULL_NUM
+          COMMIT_SHA=\$(echo "\$HEAD_COMMIT" | cut -c1-8)
+          TIMESTAMP=\$(date -u +%Y%m%d%H%M%S)
+
+          # Generate S3 path for organized storage
+          S3_PATH="terraform-plans/\${REPO_ORG}/\${REPO_NAME}/\${PR_NUM}/\${COMMIT_SHA}"
+
+          # Create apply result metadata
+          APPLY_META="{\"repo\":\"\${REPO_ORG}/\${REPO_NAME}\",\"pr\":\${PR_NUM},\"commit\":\"\${COMMIT_SHA}\",\"timestamp\":\"\${TIMESTAMP}\",\"operation\":\"apply\""
+
+          # Check apply result by looking at exit code of previous step
+          APPLY_EXIT_CODE=\${PIPESTATUS[0]:-0}
+
+          if [ \$APPLY_EXIT_CODE -eq 0 ]; then
+            echo "✅ Apply succeeded - uploading results"
+            APPLY_META="\${APPLY_META},\"status\":\"success\"}"
+
+            # Create apply success context
+            APPLY_RESULT="{\"status\":\"success\",\"timestamp\":\"\${TIMESTAMP}\",\"message\":\"Apply completed successfully\"}"
+            echo "\$APPLY_RESULT" > apply_result.json
+
+            # Upload apply results
+            aws s3 cp apply_result.json "s3://${AI_REVIEW_BUCKET}/\${S3_PATH}/apply_result.json" \
+              --metadata "\${APPLY_META}"
+
+          else
+            echo "❌ Apply failed - uploading error context"
+            APPLY_META="\${APPLY_META},\"status\":\"failed\"}"
+
+            # Create apply error context
+            APPLY_ERROR="{\"status\":\"failed\",\"timestamp\":\"\${TIMESTAMP}\",\"message\":\"Apply failed - check Atlantis logs\",\"exit_code\":\$APPLY_EXIT_CODE}"
+            echo "\$APPLY_ERROR" > apply_error.json
+
+            # Upload error context
+            aws s3 cp apply_error.json "s3://${AI_REVIEW_BUCKET}/\${S3_PATH}/apply_error.json" \
+              --metadata "\${APPLY_META}"
+          fi
+
+          echo "📤 Apply result uploaded to S3: \${S3_PATH}/"
+          echo "🤖 AI has been notified of the apply result"
 YAML
 else
     cat > atlantis.yaml << YAML

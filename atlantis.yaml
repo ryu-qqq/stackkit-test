@@ -1,0 +1,112 @@
+version: 3
+projects:
+- name: stackkit-test-.
+  dir: .
+  terraform_version: v1.5.7
+  autoplan:
+    when_modified: ["**/*.tf", "**/*.tfvars"]
+    enabled: false
+  apply_requirements: ["approved", "mergeable"]
+  delete_source_branch_on_merge: false
+  workflow: ai-review
+
+workflows:
+  ai-review:
+    plan:
+      steps:
+      - init
+      - plan:
+          extra_args: ["-lock-timeout=10m", "-out=$PLANFILE"]
+      - run: |
+          set -e  # Don't exit on error initially
+
+          # Extract repo and PR info from environment
+          REPO_ORG=$(echo "$BASE_REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          REPO_NAME=$(echo "$BASE_REPO_NAME" | tr '[:upper:]' '[:lower:]')
+          PR_NUM=$PULL_NUM
+          COMMIT_SHA=$(echo "$HEAD_COMMIT" | cut -c1-8)
+          TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
+
+          # Generate S3 path for organized storage
+          S3_PATH="terraform-plans/${REPO_ORG}/${REPO_NAME}/${PR_NUM}/${COMMIT_SHA}"
+
+          # Create result metadata
+          RESULT_META="{\"repo\":\"${REPO_ORG}/${REPO_NAME}\",\"pr\":${PR_NUM},\"commit\":\"${COMMIT_SHA}\",\"timestamp\":\"${TIMESTAMP}\",\"operation\":\"plan\""
+
+          # Check if plan was successful by checking planfile existence
+          if [ -f "$PLANFILE" ]; then
+            echo "✅ Plan succeeded - uploading results for AI analysis"
+            RESULT_META="${RESULT_META},\"status\":\"success\"}"
+
+            # Convert plan to JSON and upload
+            terraform show -json "$PLANFILE" > plan.json
+            aws s3 cp plan.json "s3://connectly-prod/${S3_PATH}/plan.json"               --metadata "${RESULT_META}"
+
+            # Upload plan file as well for debugging
+            aws s3 cp "$PLANFILE" "s3://connectly-prod/${S3_PATH}/plan.tfplan"               --metadata "${RESULT_META}"
+
+          else
+            echo "❌ Plan failed - uploading error context for AI analysis"
+            RESULT_META="${RESULT_META},\"status\":\"failed\"}"
+
+            # Create error context file
+            ERROR_CONTEXT="{\"error\":\"Plan failed\",\"timestamp\":\"${TIMESTAMP}\",\"logs\":\"Plan execution failed - check Atlantis logs\"}"
+            echo "$ERROR_CONTEXT" > plan_error.json
+
+            # Upload error context
+            aws s3 cp plan_error.json "s3://connectly-prod/${S3_PATH}/plan_error.json"               --metadata "${RESULT_META}"
+          fi
+
+          echo "📤 Plan result uploaded to S3: ${S3_PATH}/"
+          echo "🤖 AI will analyze and comment on this PR shortly..."
+
+          # Re-enable strict error handling for any subsequent steps
+          set -euo pipefail
+    apply:
+      steps:
+      - apply:
+          extra_args: ["-lock-timeout=10m"]
+      - run: |
+          set -e
+
+          # Extract repo and PR info from environment
+          REPO_ORG=$(echo "$BASE_REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          REPO_NAME=$(echo "$BASE_REPO_NAME" | tr '[:upper:]' '[:lower:]')
+          PR_NUM=$PULL_NUM
+          COMMIT_SHA=$(echo "$HEAD_COMMIT" | cut -c1-8)
+          TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
+
+          # Generate S3 path for organized storage
+          S3_PATH="terraform-plans/${REPO_ORG}/${REPO_NAME}/${PR_NUM}/${COMMIT_SHA}"
+
+          # Create apply result metadata
+          APPLY_META="{\"repo\":\"${REPO_ORG}/${REPO_NAME}\",\"pr\":${PR_NUM},\"commit\":\"${COMMIT_SHA}\",\"timestamp\":\"${TIMESTAMP}\",\"operation\":\"apply\""
+
+          # Check apply result by looking at exit code of previous step
+          APPLY_EXIT_CODE=${PIPESTATUS[0]:-0}
+
+          if [ $APPLY_EXIT_CODE -eq 0 ]; then
+            echo "✅ Apply succeeded - uploading results"
+            APPLY_META="${APPLY_META},\"status\":\"success\"}"
+
+            # Create apply success context
+            APPLY_RESULT="{\"status\":\"success\",\"timestamp\":\"${TIMESTAMP}\",\"message\":\"Apply completed successfully\"}"
+            echo "$APPLY_RESULT" > apply_result.json
+
+            # Upload apply results
+            aws s3 cp apply_result.json "s3://connectly-prod/${S3_PATH}/apply_result.json"               --metadata "${APPLY_META}"
+
+          else
+            echo "❌ Apply failed - uploading error context"
+            APPLY_META="${APPLY_META},\"status\":\"failed\"}"
+
+            # Create apply error context
+            APPLY_ERROR="{\"status\":\"failed\",\"timestamp\":\"${TIMESTAMP}\",\"message\":\"Apply failed - check Atlantis logs\",\"exit_code\":$APPLY_EXIT_CODE}"
+            echo "$APPLY_ERROR" > apply_error.json
+
+            # Upload error context
+            aws s3 cp apply_error.json "s3://connectly-prod/${S3_PATH}/apply_error.json"               --metadata "${APPLY_META}"
+          fi
+
+          echo "📤 Apply result uploaded to S3: ${S3_PATH}/"
+          echo "🤖 AI has been notified of the apply result"
