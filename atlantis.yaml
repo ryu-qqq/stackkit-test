@@ -40,11 +40,11 @@ workflows:
 
             # Convert plan to JSON and upload
             terraform show -json "$PLANFILE" > plan.json
-            aws s3 cp plan.json "s3://${AI_REVIEW_BUCKET:-connectly-prod}/${S3_PATH}/plan.json" \
+            aws s3 cp plan.json "s3://${AI_REVIEW_BUCKET}/${S3_PATH}/plan.json" \
               --metadata "${RESULT_META}"
 
             # Upload plan file as well for debugging
-            aws s3 cp "$PLANFILE" "s3://${AI_REVIEW_BUCKET:-connectly-prod}/${S3_PATH}/plan.tfplan" \
+            aws s3 cp "$PLANFILE" "s3://${AI_REVIEW_BUCKET}/${S3_PATH}/plan.tfplan" \
               --metadata "${RESULT_META}"
 
           else
@@ -56,7 +56,7 @@ workflows:
             echo "$ERROR_CONTEXT" > plan_error.json
 
             # Upload error context
-            aws s3 cp plan_error.json "s3://${AI_REVIEW_BUCKET:-connectly-prod}/${S3_PATH}/plan_error.json" \
+            aws s3 cp plan_error.json "s3://${AI_REVIEW_BUCKET}/${S3_PATH}/plan_error.json" \
               --metadata "${RESULT_META}"
           fi
 
@@ -97,7 +97,7 @@ workflows:
             echo "$APPLY_RESULT" > apply_result.json
 
             # Upload apply results
-            aws s3 cp apply_result.json "s3://${AI_REVIEW_BUCKET:-connectly-prod}/${S3_PATH}/apply_result.json" \
+            aws s3 cp apply_result.json "s3://${AI_REVIEW_BUCKET}/${S3_PATH}/apply_result.json" \
               --metadata "${APPLY_META}"
 
           else
@@ -109,7 +109,7 @@ workflows:
             echo "$APPLY_ERROR" > apply_error.json
 
             # Upload error context
-            aws s3 cp apply_error.json "s3://${AI_REVIEW_BUCKET:-connectly-prod}/${S3_PATH}/apply_error.json" \
+            aws s3 cp apply_error.json "s3://${AI_REVIEW_BUCKET}/${S3_PATH}/apply_error.json" \
               --metadata "${APPLY_META}"
           fi
 
