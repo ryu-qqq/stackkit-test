@@ -45,7 +45,7 @@ module "test_bucket" {
   bucket_name        = "test-logs"
   versioning_enabled = true
 
-  # 라이프사이클 규칙 - 30일 후 IA로 이동 (backend "local" 테스트)
+  # 라이프사이클 규칙 - 30일 후 IA로 이동 (Plan 실패해도 S3 업로드 테스트)
   lifecycle_rules = [
     {
       id     = "logs_lifecycle"

@@ -15,10 +15,15 @@ workflows:
     plan:
       steps:
       - init
-      - plan:
-          extra_args: ["-lock-timeout=10m", "-out=$PLANFILE"]
       - run: |
-          set -e  # Don't exit on error initially
+          # Plan with error handling for AI review
+          set +e  # Don't exit on error - we want to capture failures
+          terraform plan -input=false -refresh -no-color -out "$PLANFILE" -lock-timeout=10m
+          PLAN_EXIT_CODE=$?
+          set -e  # Re-enable exit on error
+          
+      - run: |
+          set -e
 
           # Extract repo and PR info from environment
           REPO_ORG=$(echo "$BASE_REPO_OWNER" | tr '[:upper:]' '[:lower:]')
