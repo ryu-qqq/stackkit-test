@@ -45,14 +45,14 @@ module "test_bucket" {
   bucket_name        = "test-logs"
   versioning_enabled = true
 
-  # 라이프사이클 규칙 - 30일 후 IA로 이동
+  # 라이프사이클 규칙 - 45일 후 IA로 이동 (테스트 변경)
   lifecycle_rules = [
     {
       id     = "logs_lifecycle"
       status = "Enabled"
       transitions = [
         {
-          days          = 30
+          days          = 45
           storage_class = "STANDARD_IA"
         }
       ]
@@ -60,4 +60,19 @@ module "test_bucket" {
   ]
 
   common_tags = local.common_tags
+}
+
+# 테스트용 추가 리소스 - Atlantis 테스트를 위한 더미 출력
+resource "null_resource" "atlantis_test" {
+  triggers = {
+    timestamp = timestamp()
+  }
+  
+  provisioner "local-exec" {
+    command = "echo 'Atlantis test triggered at ${timestamp()}'"
+  }
+  
+  lifecycle {
+    create_before_destroy = true
+  }
 }

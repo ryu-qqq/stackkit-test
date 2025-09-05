@@ -1,0 +1,35 @@
+name: "Terraform Apply - dev (on merge)"
+
+on:
+  push:
+    branches: [ "main" ]
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: tf-apply-dev
+  cancel-in-progress: false
+
+jobs:
+  apply-dev:
+    environment: dev
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform/stacks/dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.8.5" }
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/github-oidc-terraform-dev
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - run: terraform init -backend-config=backend.hcl -reconfigure
+      - run: terraform plan -var-file=dev.tfvars -out=plan.tfplan
+      - run: terraform apply -auto-approve plan.tfplan
