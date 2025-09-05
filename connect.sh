@@ -297,7 +297,7 @@ version: 3
 projects:
 - name: $(basename "$REPO_NAME")-$(basename "$PROJECT_DIR")
   dir: $PROJECT_DIR
-  terraform_version: v1.8.5
+  terraform_version: v1.7.5
   autoplan:
     when_modified: ["**/*.tf", "**/*.tfvars"]
     enabled: $AUTO_PLAN
@@ -417,7 +417,7 @@ version: 3
 projects:
 - name: $(basename "$REPO_NAME")-$(basename "$PROJECT_DIR")
   dir: $PROJECT_DIR
-  terraform_version: v1.8.5
+  terraform_version: v1.7.5
   autoplan:
     when_modified: ["**/*.tf", "**/*.tfvars"]
     enabled: $AUTO_PLAN

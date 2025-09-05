@@ -2,7 +2,7 @@ version: 3
 projects:
 - name: stackkit-test-dev-ap-northeast-2
   dir: terraform/stacks/stackkit-test-dev-ap-northeast-2
-  terraform_version: v1.8.5
+  terraform_version: v1.7.5
   autoplan:
     when_modified: ["**/*.tf", "**/*.tfvars"]
     enabled: true
