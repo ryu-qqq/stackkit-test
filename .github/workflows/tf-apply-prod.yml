@@ -1,0 +1,58 @@
+name: "Terraform Apply - prod (manual & approved)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to deploy (main/tag/sha)"
+        required: false
+        default: "main"
+
+permissions:
+  id-token: write
+  contents: read
+  deployments: write
+
+env:
+  TF_STACK_NAME: ${{ vars.TF_STACK_NAME || github.event.repository.name }}
+  TF_STACK_REGION: ${{ vars.TF_STACK_REGION || 'ap-northeast-2' }}
+
+concurrency:
+  group: tf-apply-prod
+  cancel-in-progress: false
+
+jobs:
+  apply-prod:
+    environment: prod   # Environments → prod에서 Reviewer 지정
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: ${{ inputs.ref }} }
+
+      - id: path
+        run: echo "STACK_DIR=terraform/stacks/${{ env.TF_STACK_NAME }}-prod-${{ env.TF_STACK_REGION }}" >> $GITHUB_OUTPUT
+
+      - uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: "1.8.5" }
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TF_PROD_ROLE_ARN }}
+          aws-region: ${{ env.TF_STACK_REGION }}
+
+      - name: terraform init
+        working-directory: ${{ steps.path.outputs.STACK_DIR }}
+        run: terraform init -backend-config=backend.hcl -reconfigure
+
+      - name: Pick tfvars (prod.tfvars > terraform.tfvars)
+        id: tfvars
+        working-directory: ${{ steps.path.outputs.STACK_DIR }}
+        run: |
+          F="terraform.tfvars"; [ -f "prod.tfvars" ] && F="prod.tfvars"
+          echo "TFVARS=$F" >> $GITHUB_OUTPUT; echo "Using $F"
+
+      - name: plan & apply
+        working-directory: ${{ steps.path.outputs.STACK_DIR }}
+        run: |
+          terraform plan -var-file=${{ steps.tfvars.outputs.TFVARS }} -out=plan.tfplan
+          terraform apply -auto-approve plan.tfplan

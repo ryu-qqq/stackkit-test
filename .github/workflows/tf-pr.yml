@@ -1,0 +1,179 @@
+name: "Terraform PR – full (detect stacks, validate, plan, cost)"
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'terraform/**'
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+# 🔧 토글(필요시 true/false로 조절)
+env:
+  TF_VERSION: "1.8.5"
+  TF_STACK_REGION: ${{ vars.TF_STACK_REGION || 'ap-northeast-2' }}
+  RUN_TFLINT: "true"
+  RUN_TFSEC: "true"
+  RUN_INFRACOST: "false"   # 비용 코멘트 쓰려면 true + secret 설정
+  INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY || '' }}
+
+jobs:
+  detect:
+    name: "변경된 스택 감지"
+    runs-on: ubuntu-latest
+    outputs:
+      stack_dirs: ${{ steps.collect.outputs.stack_dirs }}
+      has_changes: ${{ steps.collect.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - id: collect
+        shell: bash
+        run: |
+          # 1) 변경 파일 목록
+          base="${{ github.base_ref }}"
+          if [ -z "$base" ]; then base="main"; fi
+          CHANGED=$(git diff --name-only origin/$base...HEAD | tr '\n' ' ')
+          echo "changed files: $CHANGED"
+
+          # 2) backend.hcl이 있는 디렉터리를 '스택'으로 간주
+          #    (파일 변경이 스택 밖에 있어도 안전하게 전체 검색)
+          mapfile -t ALL_STACKS < <(find terraform/stacks -name backend.hcl -printf '%h\n' | sort -u)
+
+          # 3) 변경이 해당 스택 경로에 포함되면 선택
+          SELECTED=()
+          for sd in "${ALL_STACKS[@]}"; do
+            if echo "$CHANGED" | grep -q "$sd/"; then
+              SELECTED+=("$sd")
+            fi
+          done
+
+          # 변경이 없으면 전체 스택 스킵
+          if [ ${#SELECTED[@]} -eq 0 ]; then
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "stack_dirs=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          printf '%s\n' "${SELECTED[@]}" | jq -R . | jq -s . > /tmp/stack_dirs.json
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "stack_dirs=$(cat /tmp/stack_dirs.json)" >> $GITHUB_OUTPUT
+          echo "Stacks:"
+          cat /tmp/stack_dirs.json
+
+  plan:
+    name: "검증/플랜/비용"
+    needs: detect
+    if: needs.detect.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        stack_dir: ${{ fromJson(needs.detect.outputs.stack_dirs) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Terraform 설치
+        uses: hashicorp/setup-terraform@v3
+        with: { terraform_version: ${{ env.TF_VERSION }} }
+
+      - name: 스택 경로/ENV 추출
+        id: meta
+        shell: bash
+        run: |
+          SD="${{ matrix.stack_dir }}"
+          echo "STACK_DIR=$SD" >> $GITHUB_OUTPUT
+          # env 추출: 경로에 prod/dev 문자열이 포함되면 그걸 ENV로 사용
+          ENV="dev"
+          if [[ "$SD" == *"/prod"* ]] || [[ "$SD" == *"-prod-"* ]]; then ENV="prod"; fi
+          echo "ENV=$ENV" >> $GITHUB_OUTPUT
+          echo "STACK_DIR=$SD / ENV=$ENV"
+
+      - name: AWS OIDC 설정
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.meta.outputs.ENV == 'prod' && secrets.TF_PROD_ROLE_ARN || secrets.TF_DEV_ROLE_ARN }}
+          aws-region: ${{ env.TF_STACK_REGION }}
+
+      - name: fmt
+        working-directory: ${{ steps.meta.outputs.STACK_DIR }}
+        run: terraform fmt -recursive -check
+
+      - name: init (backend.hcl)
+        working-directory: ${{ steps.meta.outputs.STACK_DIR }}
+        run: terraform init -backend-config=backend.hcl -reconfigure
+
+      - name: tfvars 선택 (ENV 우선)
+        id: tfvars
+        working-directory: ${{ steps.meta.outputs.STACK_DIR }}
+        shell: bash
+        run: |
+          F="terraform.tfvars"
+          [ -f "${{ steps.meta.outputs.ENV }}.tfvars" ] && F="${{ steps.meta.outputs.ENV }}.tfvars"
+          echo "TFVARS=$F" >> $GITHUB_OUTPUT
+          echo "Using $F"
+
+      - name: validate
+        working-directory: ${{ steps.meta.outputs.STACK_DIR }}
+        run: terraform validate
+
+      - name: 정책 가드(tf_forbidden.sh)
+        env:
+          ROOT: terraform   # 스크립트가 terraform/modules, terraform/stacks 기준으로 검사
+        run: bash terraform/tools/tf_forbidden.sh
+
+      - name: tflint
+        if: env.RUN_TFLINT == 'true'
+        run: |
+          curl -sSL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+          tflint --init
+          tflint --recursive ${{ steps.meta.outputs.STACK_DIR }}
+
+      - name: tfsec
+        if: env.RUN_TFSEC == 'true'
+        uses: aquasecurity/tfsec-action@v1.0.7
+        with: { working_directory: ${{ steps.meta.outputs.STACK_DIR }} }
+
+      - name: plan
+        id: plan
+        working-directory: ${{ steps.meta.outputs.STACK_DIR }}
+        run: terraform plan -var-file=${{ steps.tfvars.outputs.TFVARS }} -out=plan.tfplan
+
+      - name: plan artifact 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan-${{ steps.meta.outputs.ENV }}-${{ github.sha }}-${{ hashFiles(format('{0}/**', steps.meta.outputs.STACK_DIR)) }}
+          path: ${{ steps.meta.outputs.STACK_DIR }}/plan.tfplan
+
+      - name: Infracost(코멘트)
+        if: env.RUN_INFRACOST == 'true' && env.INFRACOST_API_KEY != ''
+        uses: infracost/actions/inline@v3
+        with:
+          path: .
+          working-directory: ${{ steps.meta.outputs.STACK_DIR }}
+          api-key: ${{ env.INFRACOST_API_KEY }}
+          post-condition: always()
+
+      - name: PR 코멘트(스택별)
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: plan-${{ steps.meta.outputs.STACK_DIR }}
+          recreate: true
+          message: |
+            ### Terraform plan – `${{ steps.meta.outputs.STACK_DIR }}`
+            - ENV: `${{ steps.meta.outputs.ENV }}`
+            - tfvars: `${{ steps.tfvars.outputs.TFVARS }}`
+            - region: `${{ env.TF_STACK_REGION }}`
+            - plan artifact 업로드 완료 ✅
+
+  no-change:
+    if: needs.detect.outputs.has_changes != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "ℹ️ Terraform 변경 없음 → 검증/플랜 생략"
