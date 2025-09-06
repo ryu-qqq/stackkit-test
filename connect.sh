@@ -388,6 +388,8 @@ workflows:
           # Generate change analysis for bot consumption
           CHANGE_SUMMARY=""
           RESOURCE_COUNTS=""
+          COST_INFO=""
+
           if [ -f "\$PLANFILE" ]; then
             # Extract resource change counts from plan
             terraform show -json "\$PLANFILE" > plan_analysis.json 2>/dev/null || echo "{}" > plan_analysis.json
@@ -408,6 +410,50 @@ workflows:
             rm -f plan_analysis.json
           fi
 
+          # Infracost analysis for cost impact
+          if [ -n "\$INFRACOST_API_KEY" ] && [ -f "\$PLANFILE" ]; then
+            echo "💰 Infracost 비용 분석 시작..."
+
+            # Generate JSON plan for Infracost
+            terraform show -json "\$PLANFILE" > plan_for_cost.json 2>/dev/null || echo "{}" > plan_for_cost.json
+
+            # Configure Infracost
+            infracost configure set api_key "\$INFRACOST_API_KEY" >/dev/null 2>&1
+
+            # Get cost breakdown in JSON format for parsing
+            COST_JSON=\$(infracost breakdown --path plan_for_cost.json --format json 2>/dev/null || echo '{}')
+
+            # Extract monthly cost for Slack metadata
+            MONTHLY_COST=\$(echo "\$COST_JSON" | jq -r '.totalMonthlyCost // "0"' 2>/dev/null || echo "0")
+
+            # Check for cost difference if baseline exists
+            if [ -f "infracost-base.json" ]; then
+              COST_DIFF_JSON=\$(infracost diff --path plan_for_cost.json --compare-to infracost-base.json --format json 2>/dev/null || echo '{}')
+              COST_DIFF=\$(echo "\$COST_DIFF_JSON" | jq -r '.diffTotalMonthlyCost // "0"' 2>/dev/null || echo "0")
+
+              if [[ "\$COST_DIFF" != "0" ]]; then
+                COST_INFO="monthly_cost:\$MONTHLY_COST|cost_diff:\$COST_DIFF"
+              else
+                COST_INFO="monthly_cost:\$MONTHLY_COST"
+              fi
+            else
+              COST_INFO="monthly_cost:\$MONTHLY_COST"
+            fi
+
+            # Generate GitHub comment
+            infracost comment github \\
+              --path plan_for_cost.json \\
+              --repo "\$BASE_REPO_OWNER/\$BASE_REPO_NAME" \\
+              --pull-request \$PULL_NUM \\
+              --github-token "\$ATLANTIS_GH_TOKEN" \\
+              --behavior update >/dev/null 2>&1 || echo "💬 Infracost GitHub 댓글 건너뛰기"
+
+            rm -f plan_for_cost.json
+            echo "✅ 비용 분석 완료"
+          else
+            echo "⚠️ Infracost API 키 없음 - 비용 분석 건너뛰기"
+          fi
+
           # Send enhanced Slack notification with change analysis for bot processing
           SLACK_MESSAGE="{
             \"text\": \"[AI-REVIEW] 🏗️ Terraform Plan \$PLAN_STATUS for \$REPO_ORG/\$REPO_NAME PR #\$PR_NUM\",
@@ -424,7 +470,7 @@ workflows:
                 \"elements\": [
                   {
                     \"type\": \"plain_text\",
-                    \"text\": \"action=plan|status=\$PLAN_STATUS|repo=\$REPO_ORG/\$REPO_NAME|pr=\$PR_NUM|commit=\$COMMIT_SHA|time=\$TIMESTAMP|\$RESOURCE_COUNTS|\$CHANGE_SUMMARY\"
+                    \"text\": \"action=plan|status=\$PLAN_STATUS|repo=\$REPO_ORG-\$REPO_NAME|pr=\$PR_NUM|commit=\$COMMIT_SHA|time=\$TIMESTAMP|\$RESOURCE_COUNTS|\$CHANGE_SUMMARY|\$COST_INFO\"
                   }
                 ]
               }
@@ -481,7 +527,7 @@ workflows:
                 \"elements\": [
                   {
                     \"type\": \"plain_text\",
-                    \"text\": \"action=apply|status=\$APPLY_STATUS|repo=\$REPO_ORG/\$REPO_NAME|pr=\$PR_NUM|commit=\$COMMIT_SHA|exit_code=\$APPLY_EXIT_CODE|time=\$TIMESTAMP\"
+                    \"text\": \"action=apply|status=\$APPLY_STATUS|repo=\$REPO_ORG-\$REPO_NAME|pr=\$PR_NUM|commit=\$COMMIT_SHA|exit_code=\$APPLY_EXIT_CODE|time=\$TIMESTAMP\"
                   }
                 ]
               }
