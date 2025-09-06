@@ -1,0 +1,192 @@
+version: 3
+projects:
+- name: 2
+  dir: terraform/stacks/stackkit-test-dev-ap-northeast-2
+  terraform_version: v1.7.5
+  autoplan:
+    when_modified: ["**/*.tf", "**/*.tfvars"]
+    enabled: false
+  apply_requirements: ["approved", "mergeable"]
+  delete_source_branch_on_merge: false
+  workflow: slack-notification
+
+workflows:
+  slack-notification:
+    plan:
+      steps:
+      - init
+      - plan:
+          extra_args: ["-lock-timeout=10m"]
+      - run: |
+          set -e
+
+          # Extract repo and PR info from environment
+          REPO_ORG=$(echo "$BASE_REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          REPO_NAME=$(echo "$BASE_REPO_NAME" | tr '[:upper:]' '[:lower:]')
+          PR_NUM=$PULL_NUM
+          COMMIT_SHA=$(echo "$HEAD_COMMIT" | cut -c1-8)
+          TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
+          PR_URL="https://github.com/${BASE_REPO_OWNER}/${BASE_REPO_NAME}/pull/${PR_NUM}"
+
+          # Check if plan was successful
+          if [ -f "$PLANFILE" ]; then
+            PLAN_STATUS="succeeded"
+            PLAN_COLOR="good"
+            echo "✅ Plan succeeded - sending Slack notification"
+          else
+            PLAN_STATUS="failed"
+            PLAN_COLOR="danger"
+            echo "❌ Plan failed - sending Slack notification"
+          fi
+
+          # Generate change analysis for bot consumption
+          CHANGE_SUMMARY=""
+          RESOURCE_COUNTS=""
+          COST_INFO=""
+
+          if [ -f "$PLANFILE" ]; then
+            # Extract resource change counts from plan
+            terraform show -json "$PLANFILE" > plan_analysis.json 2>/dev/null || echo "{}" > plan_analysis.json
+
+            CREATE_COUNT=$(jq -r '[.resource_changes[]? | select(.change.actions[]? == "create")] | length' plan_analysis.json 2>/dev/null || echo "0")
+            UPDATE_COUNT=$(jq -r '[.resource_changes[]? | select(.change.actions[]? == "update")] | length' plan_analysis.json 2>/dev/null || echo "0")
+            DELETE_COUNT=$(jq -r '[.resource_changes[]? | select(.change.actions[]? == "delete")] | length' plan_analysis.json 2>/dev/null || echo "0")
+
+            RESOURCE_COUNTS="create:$CREATE_COUNT|update:$UPDATE_COUNT|delete:$DELETE_COUNT"
+
+            # Extract top resource types being changed
+            TOP_RESOURCES=$(jq -r '[.resource_changes[]?.type] | group_by(.) | map({type: .[0], count: length}) | sort_by(.count) | reverse | .[0:3] | map("\(.type):\(.count)") | join(",")' plan_analysis.json 2>/dev/null || echo "")
+
+            if [[ -n "$TOP_RESOURCES" ]]; then
+              CHANGE_SUMMARY="resources:$TOP_RESOURCES"
+            fi
+
+            rm -f plan_analysis.json
+          fi
+
+          # Infracost analysis for cost impact
+          if [ -n "$INFRACOST_API_KEY" ] && [ -f "$PLANFILE" ] && command -v infracost >/dev/null 2>&1; then
+            echo "💰 Infracost 비용 분석 시작..."
+
+            # Generate JSON plan for Infracost
+            terraform show -json "$PLANFILE" > plan_for_cost.json 2>/dev/null || echo "{}" > plan_for_cost.json
+
+            # Configure Infracost
+            infracost configure set api_key "$INFRACOST_API_KEY" >/dev/null 2>&1
+
+            # Get cost breakdown in JSON format for parsing
+            COST_JSON=$(infracost breakdown --path plan_for_cost.json --format json 2>/dev/null || echo '{}')
+
+            # Extract monthly cost for Slack metadata
+            MONTHLY_COST=$(echo "$COST_JSON" | jq -r '.totalMonthlyCost // "0"' 2>/dev/null || echo "0")
+
+            # Check for cost difference if baseline exists
+            if [ -f "infracost-base.json" ]; then
+              COST_DIFF_JSON=$(infracost diff --path plan_for_cost.json --compare-to infracost-base.json --format json 2>/dev/null || echo '{}')
+              COST_DIFF=$(echo "$COST_DIFF_JSON" | jq -r '.diffTotalMonthlyCost // "0"' 2>/dev/null || echo "0")
+
+              if [[ "$COST_DIFF" != "0" ]]; then
+                COST_INFO="monthly_cost:$MONTHLY_COST|cost_diff:$COST_DIFF"
+              else
+                COST_INFO="monthly_cost:$MONTHLY_COST"
+              fi
+            else
+              COST_INFO="monthly_cost:$MONTHLY_COST"
+            fi
+
+            # Generate GitHub comment
+            infracost comment github \
+              --path plan_for_cost.json \
+              --repo "$BASE_REPO_OWNER/$BASE_REPO_NAME" \
+              --pull-request $PULL_NUM \
+              --github-token "$ATLANTIS_GH_TOKEN" \
+              --behavior update >/dev/null 2>&1 || echo "💬 Infracost GitHub 댓글 건너뛰기"
+
+            rm -f plan_for_cost.json
+            echo "✅ 비용 분석 완료"
+          else
+            echo "⚠️ Infracost API 키 없음 - 비용 분석 건너뛰기"
+          fi
+
+          # Send enhanced Slack notification with change analysis for bot processing
+          SLACK_MESSAGE="{
+            \"text\": \"🏗️ Terraform Plan $PLAN_STATUS for $REPO_ORG/$REPO_NAME PR #$PR_NUM\",
+            \"blocks\": [
+              {
+                \"type\": \"section\",
+                \"text\": {
+                  \"type\": \"mrkdwn\",
+                  \"text\": \"🏗️ *Terraform Plan $PLAN_STATUS* for `$REPO_ORG/$REPO_NAME` <$PR_URL|PR #$PR_NUM>\"
+                }
+              },
+              {
+                \"type\": \"context\",
+                \"elements\": [
+                  {
+                    \"type\": \"plain_text\",
+                    \"text\": \"action=plan|status=$PLAN_STATUS|repo=$REPO_ORG-$REPO_NAME|pr=$PR_NUM|commit=$COMMIT_SHA|time=$TIMESTAMP|$RESOURCE_COUNTS|$CHANGE_SUMMARY|$COST_INFO\"
+                  }
+                ]
+              }
+            ]
+          }"
+
+          curl -X POST -H 'Content-type: application/json'             --data "$SLACK_MESSAGE"             "$SLACK_WEBHOOK_URL"
+
+          echo "📤 Plan result sent to Slack"
+          echo "🤖 AI will analyze and comment on this PR shortly..."
+    apply:
+      steps:
+      - apply:
+          extra_args: ["-lock-timeout=10m", "-input=false", "$PLANFILE"]
+      - run: |
+          set -e
+
+          # Extract repo and PR info from environment
+          REPO_ORG=$(echo "$BASE_REPO_OWNER" | tr '[:upper:]' '[:lower:]')
+          REPO_NAME=$(echo "$BASE_REPO_NAME" | tr '[:upper:]' '[:lower:]')
+          PR_NUM=$PULL_NUM
+          COMMIT_SHA=$(echo "$HEAD_COMMIT" | cut -c1-8)
+          TIMESTAMP=$(date -u +%Y%m%d%H%M%S)
+          PR_URL="https://github.com/${BASE_REPO_OWNER}/${BASE_REPO_NAME}/pull/${PR_NUM}"
+
+          # Check apply result by looking at exit code of previous step
+          APPLY_EXIT_CODE=${PIPESTATUS[0]:-0}
+
+          if [ $APPLY_EXIT_CODE -eq 0 ]; then
+            APPLY_STATUS="succeeded"
+            APPLY_COLOR="good"
+            echo "✅ Apply succeeded - sending Slack notification"
+          else
+            APPLY_STATUS="failed"
+            APPLY_COLOR="danger"
+            echo "❌ Apply failed - sending Slack notification"
+          fi
+
+          # Send simplified Slack notification for reliable delivery and easy bot parsing
+          SLACK_MESSAGE="{
+            \"text\": \"🚀 Terraform Apply $APPLY_STATUS for $REPO_ORG/$REPO_NAME PR #$PR_NUM\",
+            \"blocks\": [
+              {
+                \"type\": \"section\",
+                \"text\": {
+                  \"type\": \"mrkdwn\",
+                  \"text\": \"🚀 *Terraform Apply $APPLY_STATUS* for `$REPO_ORG/$REPO_NAME` <$PR_URL|PR #$PR_NUM>\"
+                }
+              },
+              {
+                \"type\": \"context\",
+                \"elements\": [
+                  {
+                    \"type\": \"plain_text\",
+                    \"text\": \"action=apply|status=$APPLY_STATUS|repo=$REPO_ORG-$REPO_NAME|pr=$PR_NUM|commit=$COMMIT_SHA|exit_code=$APPLY_EXIT_CODE|time=$TIMESTAMP\"
+                  }
+                ]
+              }
+            ]
+          }"
+
+          curl -X POST -H 'Content-type: application/json'             --data "$SLACK_MESSAGE"             "$SLACK_WEBHOOK_URL"
+
+          echo "📤 Apply result sent to Slack"
+          echo "🤖 AI has been notified of the apply result"
