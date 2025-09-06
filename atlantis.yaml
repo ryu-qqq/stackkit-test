@@ -1,11 +1,11 @@
 version: 3
 projects:
-- name: stackkit-test-.
-  dir: .
+- name: stackkit-test-dev
+  dir: terraform/stacks/stackkit-test-dev-ap-northeast-2
   terraform_version: v1.7.5
   autoplan:
     when_modified: ["**/*.tf", "**/*.tfvars"]
-    enabled: false
+    enabled: true
   apply_requirements: ["approved", "mergeable"]
   delete_source_branch_on_merge: false
   workflow: slack-notification
