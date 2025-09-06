@@ -346,7 +346,7 @@ if [[ "$ENABLE_SLACK_NOTIFICATIONS" == true ]]; then
     cat > atlantis.yaml << YAML
 version: 3
 projects:
-- name: $(basename "$REPO_NAME")-$(basename "$PROJECT_DIR")
+- name: $(basename "$PROJECT_DIR" | sed 's/.*-//')
   dir: $PROJECT_DIR
   terraform_version: v1.7.5
   autoplan:
@@ -362,7 +362,7 @@ workflows:
       steps:
       - init
       - plan:
-          extra_args: ["-lock-timeout=10m", "-out=terraform-plan.tfplan"]
+          extra_args: ["-lock-timeout=10m", "-out=tfplan"]
       - run: |
           set -e
 
@@ -375,7 +375,7 @@ workflows:
           PR_URL="https://github.com/\${BASE_REPO_OWNER}/\${BASE_REPO_NAME}/pull/\${PR_NUM}"
 
           # Check if plan was successful
-          if [ -f "terraform-plan.tfplan" ]; then
+          if [ -f "tfplan" ]; then
             PLAN_STATUS="succeeded"
             PLAN_COLOR="good"
             echo "✅ Plan succeeded - sending Slack notification"
@@ -433,7 +433,7 @@ workflows:
     apply:
       steps:
       - apply:
-          extra_args: ["-lock-timeout=10m", "-input=false", "terraform-plan.tfplan"]
+          extra_args: ["-lock-timeout=10m", "-input=false", "tfplan"]
       - run: |
           set -e
 
@@ -513,7 +513,7 @@ else
     cat > atlantis.yaml << YAML
 version: 3
 projects:
-- name: $(basename "$REPO_NAME")-$(basename "$PROJECT_DIR")
+- name: $(basename "$PROJECT_DIR" | sed 's/.*-//')
   dir: $PROJECT_DIR
   terraform_version: v1.7.5
   autoplan:
@@ -529,11 +529,11 @@ workflows:
       steps:
       - init
       - plan:
-          extra_args: ["-lock-timeout=10m", "-out=terraform-plan.tfplan"]
+          extra_args: ["-lock-timeout=10m", "-out=tfplan"]
     apply:
       steps:
       - apply:
-          extra_args: ["-lock-timeout=10m", "-input=false", "terraform-plan.tfplan"]
+          extra_args: ["-lock-timeout=10m", "-input=false", "tfplan"]
 YAML
 fi
 
