@@ -56,8 +56,6 @@ Options:
     --auto-plan            자동 plan 활성화 (기본: false)
     --auto-merge           자동 merge 활성화 (기본: false)
     --skip-webhook         웹훅 설정 건너뛰기
-    --enable-ai-reviewer   AI 리뷰어 활성화
-    --ai-review-bucket     AI 리뷰용 S3 버킷 이름
     --help                 이 도움말 표시
 
 Examples:
@@ -72,15 +70,14 @@ Examples:
        --repo-name myorg/myrepo \\
        --skip-webhook
 
-    # AI 리뷰어와 함께 설정
+    # Slack 알림과 함께 설정
     $0 --atlantis-url https://atlantis.company.com \\
        --repo-name myorg/myrepo \\
        --github-token ghp_xxxxxxxxxxxx \\
        --secret-name prod-atlantis-secrets \\
-       --enable-ai-reviewer \\
-       --ai-review-bucket my-ai-review-bucket
+       --enable-slack-notifications
 
-    # 참고: OpenAI/Slack 키는 quick-deploy.sh에서 설정됩니다
+    # 참고: Slack 웹훅 URL은 Atlantis Secrets Manager에서 설정됨
 EOF
 }
 
@@ -97,8 +94,7 @@ AWS_REGION="${TF_STACK_REGION}"
 AUTO_PLAN=false
 AUTO_MERGE=false
 SKIP_WEBHOOK=false
-ENABLE_AI_REVIEWER=false
-AI_REVIEW_BUCKET=""
+ENABLE_SLACK_NOTIFICATIONS=false
 
 # StackKit 호환 - 환경변수에서 값 읽기 (GitHub Actions/Secrets용)
 ATLANTIS_GITHUB_TOKEN="${ATLANTIS_GITHUB_TOKEN:-$GITHUB_TOKEN}"
@@ -116,8 +112,7 @@ while [[ $# -gt 0 ]]; do
         --auto-plan) AUTO_PLAN=true; shift ;;
         --auto-merge) AUTO_MERGE=true; shift ;;
         --skip-webhook) SKIP_WEBHOOK=true; shift ;;
-        --enable-ai-reviewer) ENABLE_AI_REVIEWER=true; shift ;;
-        --ai-review-bucket) AI_REVIEW_BUCKET="$2"; shift 2 ;;
+        --enable-slack-notifications) ENABLE_SLACK_NOTIFICATIONS=true; shift ;;
         --help) show_help; exit 0 ;;
         *) echo "Unknown option: $1"; show_help; exit 1 ;;
     esac
@@ -146,14 +141,6 @@ if [[ -z "$REPO_NAME" ]]; then
     fi
 fi
 
-# AI Reviewer validation
-if [[ "$ENABLE_AI_REVIEWER" == true ]]; then
-    if [[ -z "$AI_REVIEW_BUCKET" ]]; then
-        log_error "AI 리뷰어가 활성화되었지만 S3 버킷이 지정되지 않았습니다. --ai-review-bucket 옵션이 필요합니다."
-        show_help
-        exit 1
-    fi
-fi
 
 show_banner
 
@@ -260,11 +247,7 @@ echo "  Terraform 버전: $TF_VERSION"
 echo "  자동 Plan: $AUTO_PLAN"
 echo "  자동 Merge: $AUTO_MERGE"
 echo "  웹훅 자동 설정: $([ "$SKIP_WEBHOOK" == false ] && echo "활성화" || echo "비활성화")"
-echo "  AI 리뷰어: $([ "$ENABLE_AI_REVIEWER" == true ] && echo "활성화" || echo "비활성화")"
-if [[ "$ENABLE_AI_REVIEWER" == true ]]; then
-    echo "  AI 리뷰 S3 버킷: $AI_REVIEW_BUCKET"
-    echo "  ※ OpenAI/Slack 키는 quick-deploy.sh에서 설정됨"
-fi
+echo "  Slack 알림: $([ "$ENABLE_SLACK_NOTIFICATIONS" == true ] && echo "활성화" || echo "비활성화")"
 if [[ -n "$SECRET_NAME" ]]; then
     echo "  Secrets Manager: $SECRET_NAME"
     echo "  AWS 리전 (TF_STACK_REGION): $AWS_REGION"
@@ -290,8 +273,8 @@ fi
 
 log_info "1/4 atlantis.yaml 설정 파일 생성 중..."
 
-# Generate atlantis.yaml with AI Reviewer integration
-if [[ "$ENABLE_AI_REVIEWER" == true && -n "$AI_REVIEW_BUCKET" ]]; then
+# Generate atlantis.yaml with Slack notifications
+if [[ "$ENABLE_SLACK_NOTIFICATIONS" == true ]]; then
     cat > atlantis.yaml << YAML
 version: 3
 projects:
@@ -303,17 +286,17 @@ projects:
     enabled: $AUTO_PLAN
   apply_requirements: ["approved", "mergeable"]
   delete_source_branch_on_merge: $AUTO_MERGE
-  workflow: ai-review
+  workflow: slack-notification
 
 workflows:
-  ai-review:
+  slack-notification:
     plan:
       steps:
       - init
       - plan:
           extra_args: ["-lock-timeout=10m", "-out=\$PLANFILE"]
       - run: |
-          set -e  # Don't exit on error initially
+          set -e
 
           # Extract repo and PR info from environment
           REPO_ORG=\$(echo "\$BASE_REPO_OWNER" | tr '[:upper:]' '[:lower:]')
@@ -321,45 +304,64 @@ workflows:
           PR_NUM=\$PULL_NUM
           COMMIT_SHA=\$(echo "\$HEAD_COMMIT" | cut -c1-8)
           TIMESTAMP=\$(date -u +%Y%m%d%H%M%S)
+          PR_URL="https://github.com/\${BASE_REPO_OWNER}/\${BASE_REPO_NAME}/pull/\${PR_NUM}"
 
-          # Generate S3 path for organized storage
-          S3_PATH="terraform-plans/\${REPO_ORG}/\${REPO_NAME}/\${PR_NUM}/\${COMMIT_SHA}"
-
-          # Create result metadata
-          RESULT_META="{\"repo\":\"\${REPO_ORG}/\${REPO_NAME}\",\"pr\":\${PR_NUM},\"commit\":\"\${COMMIT_SHA}\",\"timestamp\":\"\${TIMESTAMP}\",\"operation\":\"plan\""
-
-          # Check if plan was successful by checking planfile existence
+          # Check if plan was successful
           if [ -f "\$PLANFILE" ]; then
-            echo "✅ Plan succeeded - uploading results for AI analysis"
-            RESULT_META="\${RESULT_META},\"status\":\"success\"}"
-
-            # Convert plan to JSON and upload
-            terraform show -json "\$PLANFILE" > plan.json
-            aws s3 cp plan.json "s3://${AI_REVIEW_BUCKET}/\${S3_PATH}/plan.json" \
-              --metadata "\${RESULT_META}"
-
-            # Upload plan file as well for debugging
-            aws s3 cp "\$PLANFILE" "s3://${AI_REVIEW_BUCKET}/\${S3_PATH}/plan.tfplan" \
-              --metadata "\${RESULT_META}"
-
+            PLAN_STATUS="succeeded"
+            PLAN_COLOR="good"
+            echo "✅ Plan succeeded - sending Slack notification"
           else
-            echo "❌ Plan failed - uploading error context for AI analysis"
-            RESULT_META="\${RESULT_META},\"status\":\"failed\"}"
-
-            # Create error context file
-            ERROR_CONTEXT="{\"error\":\"Plan failed\",\"timestamp\":\"\${TIMESTAMP}\",\"logs\":\"Plan execution failed - check Atlantis logs\"}"
-            echo "\$ERROR_CONTEXT" > plan_error.json
-
-            # Upload error context
-            aws s3 cp plan_error.json "s3://${AI_REVIEW_BUCKET}/\${S3_PATH}/plan_error.json" \
-              --metadata "\${RESULT_META}"
+            PLAN_STATUS="failed"
+            PLAN_COLOR="danger"
+            echo "❌ Plan failed - sending Slack notification"
           fi
 
-          echo "📤 Plan result uploaded to S3: \${S3_PATH}/"
-          echo "🤖 AI will analyze and comment on this PR shortly..."
+          # Send Slack notification with AI-REVIEW trigger and JSON metadata
+          SLACK_MESSAGE="{
+            \"text\": \"[AI-REVIEW] 🏗️ Terraform Plan \$PLAN_STATUS\",
+            \"attachments\": [
+              {
+                \"color\": \"\$PLAN_COLOR\",
+                \"title\": \"🏗️ Terraform Plan \$PLAN_STATUS\",
+                \"title_link\": \"\$PR_URL\",
+                \"fields\": [
+                  {
+                    \"title\": \"Repository\",
+                    \"value\": \"\$REPO_ORG/\$REPO_NAME\",
+                    \"short\": true
+                  },
+                  {
+                    \"title\": \"PR Number\",
+                    \"value\": \"\$PR_NUM\",
+                    \"short\": true
+                  },
+                  {
+                    \"title\": \"Commit\",
+                    \"value\": \"\$COMMIT_SHA\",
+                    \"short\": true
+                  },
+                  {
+                    \"title\": \"Timestamp\",
+                    \"value\": \"\$TIMESTAMP\",
+                    \"short\": true
+                  },
+                  {
+                    \"title\": \"Metadata\",
+                    \"value\": \"\\\`\\\`\\\`json\\n{\\\"action\\\":\\\"plan\\\",\\\"status\\\":\\\"\$PLAN_STATUS\\\",\\\"repository\\\":\\\"\$REPO_ORG/\$REPO_NAME\\\",\\\"pr\\\":\$PR_NUM,\\\"commit\\\":\\\"\$COMMIT_SHA\\\",\\\"timestamp\\\":\\\"\$TIMESTAMP\\\"}\\n\\\`\\\`\\\`\",
+                    \"short\": false
+                  }
+                ]
+              }
+            ]
+          }"
 
-          # Re-enable strict error handling for any subsequent steps
-          set -euo pipefail
+          curl -X POST -H 'Content-type: application/json' \
+            --data "\$SLACK_MESSAGE" \
+            "\$SLACK_WEBHOOK_URL"
+
+          echo "📤 Plan result sent to Slack"
+          echo "🤖 AI will analyze and comment on this PR shortly..."
     apply:
       steps:
       - apply:
@@ -373,42 +375,70 @@ workflows:
           PR_NUM=\$PULL_NUM
           COMMIT_SHA=\$(echo "\$HEAD_COMMIT" | cut -c1-8)
           TIMESTAMP=\$(date -u +%Y%m%d%H%M%S)
-
-          # Generate S3 path for organized storage
-          S3_PATH="terraform-plans/\${REPO_ORG}/\${REPO_NAME}/\${PR_NUM}/\${COMMIT_SHA}"
-
-          # Create apply result metadata
-          APPLY_META="{\"repo\":\"\${REPO_ORG}/\${REPO_NAME}\",\"pr\":\${PR_NUM},\"commit\":\"\${COMMIT_SHA}\",\"timestamp\":\"\${TIMESTAMP}\",\"operation\":\"apply\""
+          PR_URL="https://github.com/\${BASE_REPO_OWNER}/\${BASE_REPO_NAME}/pull/\${PR_NUM}"
 
           # Check apply result by looking at exit code of previous step
           APPLY_EXIT_CODE=\${PIPESTATUS[0]:-0}
 
           if [ \$APPLY_EXIT_CODE -eq 0 ]; then
-            echo "✅ Apply succeeded - uploading results"
-            APPLY_META="\${APPLY_META},\"status\":\"success\"}"
-
-            # Create apply success context
-            APPLY_RESULT="{\"status\":\"success\",\"timestamp\":\"\${TIMESTAMP}\",\"message\":\"Apply completed successfully\"}"
-            echo "\$APPLY_RESULT" > apply_result.json
-
-            # Upload apply results
-            aws s3 cp apply_result.json "s3://${AI_REVIEW_BUCKET}/\${S3_PATH}/apply_result.json" \
-              --metadata "\${APPLY_META}"
-
+            APPLY_STATUS="succeeded"
+            APPLY_COLOR="good"
+            echo "✅ Apply succeeded - sending Slack notification"
           else
-            echo "❌ Apply failed - uploading error context"
-            APPLY_META="\${APPLY_META},\"status\":\"failed\"}"
-
-            # Create apply error context
-            APPLY_ERROR="{\"status\":\"failed\",\"timestamp\":\"\${TIMESTAMP}\",\"message\":\"Apply failed - check Atlantis logs\",\"exit_code\":\$APPLY_EXIT_CODE}"
-            echo "\$APPLY_ERROR" > apply_error.json
-
-            # Upload error context
-            aws s3 cp apply_error.json "s3://${AI_REVIEW_BUCKET}/\${S3_PATH}/apply_error.json" \
-              --metadata "\${APPLY_META}"
+            APPLY_STATUS="failed"
+            APPLY_COLOR="danger"
+            echo "❌ Apply failed - sending Slack notification"
           fi
 
-          echo "📤 Apply result uploaded to S3: \${S3_PATH}/"
+          # Send Slack notification with AI-REVIEW trigger and JSON metadata
+          SLACK_MESSAGE="{
+            \"text\": \"[AI-REVIEW] 🚀 Terraform Apply \$APPLY_STATUS\",
+            \"attachments\": [
+              {
+                \"color\": \"\$APPLY_COLOR\",
+                \"title\": \"🚀 Terraform Apply \$APPLY_STATUS\",
+                \"title_link\": \"\$PR_URL\",
+                \"fields\": [
+                  {
+                    \"title\": \"Repository\",
+                    \"value\": \"\$REPO_ORG/\$REPO_NAME\",
+                    \"short\": true
+                  },
+                  {
+                    \"title\": \"PR Number\",
+                    \"value\": \"\$PR_NUM\",
+                    \"short\": true
+                  },
+                  {
+                    \"title\": \"Commit\",
+                    \"value\": \"\$COMMIT_SHA\",
+                    \"short\": true
+                  },
+                  {
+                    \"title\": \"Timestamp\",
+                    \"value\": \"\$TIMESTAMP\",
+                    \"short\": true
+                  },
+                  {
+                    \"title\": \"Exit Code\",
+                    \"value\": \"\$APPLY_EXIT_CODE\",
+                    \"short\": true
+                  },
+                  {
+                    \"title\": \"Metadata\",
+                    \"value\": \"\\\`\\\`\\\`json\\n{\\\"action\\\":\\\"apply\\\",\\\"status\\\":\\\"\$APPLY_STATUS\\\",\\\"repository\\\":\\\"\$REPO_ORG/\$REPO_NAME\\\",\\\"pr\\\":\$PR_NUM,\\\"commit\\\":\\\"\$COMMIT_SHA\\\",\\\"timestamp\\\":\\\"\$TIMESTAMP\\\",\\\"exit_code\\\":\$APPLY_EXIT_CODE}\\n\\\`\\\`\\\`\",
+                    \"short\": false
+                  }
+                ]
+              }
+            ]
+          }"
+
+          curl -X POST -H 'Content-type: application/json' \
+            --data "\$SLACK_MESSAGE" \
+            "\$SLACK_WEBHOOK_URL"
+
+          echo "📤 Apply result sent to Slack"
           echo "🤖 AI has been notified of the apply result"
 YAML
 else
@@ -721,8 +751,8 @@ echo ""
 echo "4. PR 생성하여 테스트:"
 echo "   - Terraform 파일 수정 후 PR 생성"
 echo "   - 'atlantis plan' 댓글로 테스트"
-if [[ "$ENABLE_AI_REVIEWER" == true ]]; then
-echo "   - 🤖 AI가 자동으로 plan 분석 및 댓글 작성"
+if [[ "$ENABLE_SLACK_NOTIFICATIONS" == true ]]; then
+echo "   - 📤 Plan/Apply 결과가 Slack으로 자동 전송 (AI 리뷰 트리거 포함)"
 fi
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

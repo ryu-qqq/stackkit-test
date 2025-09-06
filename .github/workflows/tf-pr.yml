@@ -18,7 +18,7 @@ env:
   TF_STACK_REGION: ${{ vars.TF_STACK_REGION || 'ap-northeast-2' }}
   RUN_TFLINT: "true"
   RUN_TFSEC: "true"
-  RUN_INFRACOST: "false"   # 비용 코멘트 쓰려면 true + secret 설정
+  RUN_INFRACOST: "true"   # 비용 코멘트 쓰려면 true + secret 설정
   INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY || '' }}
 
 jobs:

@@ -52,7 +52,7 @@ module "test_bucket" {
       status = "Enabled"
       transitions = [
         {
-          days          = 45
+          days          = 30
           storage_class = "STANDARD_IA"
         }
       ]
