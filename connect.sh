@@ -385,7 +385,30 @@ workflows:
             echo "❌ Plan failed - sending Slack notification"
           fi
 
-          # Send simplified Slack notification for reliable delivery and easy bot parsing
+          # Generate change analysis for bot consumption
+          CHANGE_SUMMARY=""
+          RESOURCE_COUNTS=""
+          if [ -f "\$PLANFILE" ]; then
+            # Extract resource change counts from plan
+            terraform show -json "\$PLANFILE" > plan_analysis.json 2>/dev/null || echo "{}" > plan_analysis.json
+
+            CREATE_COUNT=\$(jq -r '[.resource_changes[]? | select(.change.actions[]? == "create")] | length' plan_analysis.json 2>/dev/null || echo "0")
+            UPDATE_COUNT=\$(jq -r '[.resource_changes[]? | select(.change.actions[]? == "update")] | length' plan_analysis.json 2>/dev/null || echo "0")
+            DELETE_COUNT=\$(jq -r '[.resource_changes[]? | select(.change.actions[]? == "delete")] | length' plan_analysis.json 2>/dev/null || echo "0")
+
+            RESOURCE_COUNTS="create:\$CREATE_COUNT|update:\$UPDATE_COUNT|delete:\$DELETE_COUNT"
+
+            # Extract top resource types being changed
+            TOP_RESOURCES=\$(jq -r '[.resource_changes[]?.type] | group_by(.) | map({type: .[0], count: length}) | sort_by(.count) | reverse | .[0:3] | map("\(.type):\(.count)") | join(",")' plan_analysis.json 2>/dev/null || echo "")
+
+            if [[ -n "\$TOP_RESOURCES" ]]; then
+              CHANGE_SUMMARY="resources:\$TOP_RESOURCES"
+            fi
+
+            rm -f plan_analysis.json
+          fi
+
+          # Send enhanced Slack notification with change analysis for bot processing
           SLACK_MESSAGE="{
             \"text\": \"[AI-REVIEW] 🏗️ Terraform Plan \$PLAN_STATUS for \$REPO_ORG/\$REPO_NAME PR #\$PR_NUM\",
             \"blocks\": [
@@ -401,7 +424,7 @@ workflows:
                 \"elements\": [
                   {
                     \"type\": \"plain_text\",
-                    \"text\": \"action=plan|status=\$PLAN_STATUS|repo=\$REPO_ORG/\$REPO_NAME|pr=\$PR_NUM|commit=\$COMMIT_SHA|time=\$TIMESTAMP\"
+                    \"text\": \"action=plan|status=\$PLAN_STATUS|repo=\$REPO_ORG/\$REPO_NAME|pr=\$PR_NUM|commit=\$COMMIT_SHA|time=\$TIMESTAMP|\$RESOURCE_COUNTS|\$CHANGE_SUMMARY\"
                   }
                 ]
               }
