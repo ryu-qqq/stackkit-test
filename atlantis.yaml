@@ -78,10 +78,37 @@ workflows:
             ]
           }"
 
-          curl -X POST -H 'Content-type: application/json'             --data "$SLACK_MESSAGE"             "$SLACK_WEBHOOK_URL"
-
-          echo "📤 Plan result sent to Slack"
-          echo "🤖 AI will analyze and comment on this PR shortly..."
+          # Debug: Check if SLACK_WEBHOOK_URL is set
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "❌ SLACK_WEBHOOK_URL environment variable is not set"
+            exit 1
+          fi
+          
+          echo "🔍 Sending Slack notification..."
+          echo "📝 Slack message: $SLACK_MESSAGE"
+          echo "🔗 Webhook URL: ${SLACK_WEBHOOK_URL:0:50}..."
+          
+          # Send Slack notification and capture response
+          CURL_RESPONSE=$(curl -X POST -H 'Content-type: application/json' \
+            --data "$SLACK_MESSAGE" \
+            --write-out "HTTPSTATUS:%{http_code}" \
+            --silent \
+            "$SLACK_WEBHOOK_URL")
+          
+          # Extract HTTP status code
+          HTTP_STATUS=$(echo $CURL_RESPONSE | tr -d '\n' | sed -E 's/.*HTTPSTATUS:([0-9]{3})$/\1/')
+          RESPONSE_BODY=$(echo $CURL_RESPONSE | sed -E 's/HTTPSTATUS:[0-9]{3}$//')
+          
+          echo "📊 HTTP Status: $HTTP_STATUS"
+          echo "📄 Response: $RESPONSE_BODY"
+          
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "✅ Plan result sent to Slack successfully"
+            echo "🤖 AI will analyze and comment on this PR shortly..."
+          else
+            echo "❌ Failed to send Slack notification (HTTP $HTTP_STATUS)"
+            echo "Response: $RESPONSE_BODY"
+          fi
     apply:
       steps:
       - apply:
@@ -154,7 +181,34 @@ workflows:
             ]
           }"
 
-          curl -X POST -H 'Content-type: application/json'             --data "$SLACK_MESSAGE"             "$SLACK_WEBHOOK_URL"
-
-          echo "📤 Apply result sent to Slack"
-          echo "🤖 AI has been notified of the apply result"
+          # Debug: Check if SLACK_WEBHOOK_URL is set
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "❌ SLACK_WEBHOOK_URL environment variable is not set"
+            exit 1
+          fi
+          
+          echo "🔍 Sending Slack notification..."
+          echo "📝 Slack message: $SLACK_MESSAGE"
+          echo "🔗 Webhook URL: ${SLACK_WEBHOOK_URL:0:50}..."
+          
+          # Send Slack notification and capture response
+          CURL_RESPONSE=$(curl -X POST -H 'Content-type: application/json' \
+            --data "$SLACK_MESSAGE" \
+            --write-out "HTTPSTATUS:%{http_code}" \
+            --silent \
+            "$SLACK_WEBHOOK_URL")
+          
+          # Extract HTTP status code
+          HTTP_STATUS=$(echo $CURL_RESPONSE | tr -d '\n' | sed -E 's/.*HTTPSTATUS:([0-9]{3})$/\1/')
+          RESPONSE_BODY=$(echo $CURL_RESPONSE | sed -E 's/HTTPSTATUS:[0-9]{3}$//')
+          
+          echo "📊 HTTP Status: $HTTP_STATUS"
+          echo "📄 Response: $RESPONSE_BODY"
+          
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "✅ Apply result sent to Slack successfully"
+            echo "🤖 AI has been notified of the apply result"
+          else
+            echo "❌ Failed to send Slack notification (HTTP $HTTP_STATUS)"
+            echo "Response: $RESPONSE_BODY"
+          fi
