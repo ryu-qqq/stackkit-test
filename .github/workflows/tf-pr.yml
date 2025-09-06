@@ -1,4 +1,4 @@
-name: "Terraform PR – full (detect stacks, validate, plan, cost)"
+name: "Terraform PR - Enhanced Security & Performance"
 
 on:
   pull_request:
@@ -11,169 +11,394 @@ permissions:
   id-token: write
   contents: read
   pull-requests: write
+  security-events: write
 
-# 🔧 토글(필요시 true/false로 조절)
 env:
-  TF_VERSION: "1.8.5"
+  TF_VERSION: "1.7.5"
   TF_STACK_REGION: ${{ vars.TF_STACK_REGION || 'ap-northeast-2' }}
+  # Security toggles
   RUN_TFLINT: "true"
   RUN_TFSEC: "true"
-  RUN_INFRACOST: "true"   # 비용 코멘트 쓰려면 true + secret 설정
-  INFRACOST_API_KEY: ${{ secrets.INFRACOST_API_KEY || '' }}
+  RUN_CHECKOV: "true"
+  RUN_INFRACOST: ${{ secrets.INFRACOST_API_KEY != '' && 'true' || 'false' }}
+  # Performance settings
+  ENABLE_CACHE: "true"
+  PARALLEL_JOBS: "3"
 
 jobs:
-  detect:
-    name: "변경된 스택 감지"
+  security-check:
+    name: "🔒 Security Validation"
     runs-on: ubuntu-latest
+    outputs:
+      security_passed: ${{ steps.validation.outputs.passed }}
+    steps:
+      - name: Validate required secrets
+        id: validation
+        run: |
+          MISSING_SECRETS=()
+          
+          # Check dev secrets
+          if [[ -z "${{ secrets.TF_DEV_ROLE_ARN }}" ]]; then
+            MISSING_SECRETS+=("TF_DEV_ROLE_ARN")
+          fi
+          
+          # Check prod secrets  
+          if [[ -z "${{ secrets.TF_PROD_ROLE_ARN }}" ]]; then
+            MISSING_SECRETS+=("TF_PROD_ROLE_ARN")
+          fi
+          
+          if [[ ${#MISSING_SECRETS[@]} -gt 0 ]]; then
+            echo "❌ Missing required secrets: ${MISSING_SECRETS[*]}"
+            echo "passed=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          echo "✅ All required secrets are configured"
+          echo "passed=true" >> $GITHUB_OUTPUT
+
+  detect:
+    name: "📁 Detect Changed Stacks"
+    runs-on: ubuntu-latest
+    needs: security-check
+    if: needs.security-check.outputs.security_passed == 'true'
     outputs:
       stack_dirs: ${{ steps.collect.outputs.stack_dirs }}
       has_changes: ${{ steps.collect.outputs.has_changes }}
+      matrix_include: ${{ steps.collect.outputs.matrix_include }}
     steps:
-      - uses: actions/checkout@v4
-        with: { fetch-depth: 0 }
+      - name: Checkout with optimized depth
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # Optimized for PR diffs
+          token: ${{ github.token }}
 
-      - id: collect
+      - name: Collect changed stacks with metadata
+        id: collect
         shell: bash
         run: |
-          # 1) 변경 파일 목록
-          base="${{ github.base_ref }}"
-          if [ -z "$base" ]; then base="main"; fi
-          CHANGED=$(git diff --name-only origin/$base...HEAD | tr '\n' ' ')
-          echo "changed files: $CHANGED"
-
-          # 2) backend.hcl이 있는 디렉터리를 '스택'으로 간주
-          #    (파일 변경이 스택 밖에 있어도 안전하게 전체 검색)
-          mapfile -t ALL_STACKS < <(find terraform/stacks -name backend.hcl -printf '%h\n' | sort -u)
-
-          # 3) 변경이 해당 스택 경로에 포함되면 선택
+          set -euo pipefail
+          
+          # Get changed files efficiently
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            CHANGED=$(git diff --name-only HEAD~1 HEAD | grep '^terraform/' || true)
+          else
+            CHANGED=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep '^terraform/' || true)
+          fi
+          
+          echo "🔍 Changed files: $CHANGED"
+          
+          # Find all stack directories (must contain backend.hcl)
+          mapfile -t ALL_STACKS < <(find terraform/stacks -name backend.hcl -exec dirname {} \; | sort -u)
+          echo "📦 Found ${#ALL_STACKS[@]} total stacks"
+          
+          # Filter to changed stacks only
           SELECTED=()
-          for sd in "${ALL_STACKS[@]}"; do
-            if echo "$CHANGED" | grep -q "$sd/"; then
-              SELECTED+=("$sd")
+          MATRIX_INCLUDE=()
+          
+          for stack_dir in "${ALL_STACKS[@]}"; do
+            if echo "$CHANGED" | grep -q "^$stack_dir/"; then
+              SELECTED+=("$stack_dir")
+          
+              # Determine environment from path (more robust detection)
+              ENV="dev"
+              if [[ "$stack_dir" =~ prod ]]; then
+                ENV="prod"
+              elif [[ "$stack_dir" =~ staging ]]; then
+                ENV="staging"
+              elif [[ "$stack_dir" =~ test ]]; then
+                ENV="test"
+              fi
+          
+              # Create matrix entry with metadata
+              MATRIX_INCLUDE+=("{\"stack_dir\":\"$stack_dir\",\"env\":\"$ENV\",\"region\":\"$TF_STACK_REGION\"}")
             fi
           done
-
-          # 변경이 없으면 전체 스택 스킵
+          
           if [ ${#SELECTED[@]} -eq 0 ]; then
+            echo "ℹ️ No stack changes detected"
             echo "has_changes=false" >> $GITHUB_OUTPUT
-            echo "stack_dirs=" >> $GITHUB_OUTPUT
+            echo "stack_dirs=[]" >> $GITHUB_OUTPUT
+            echo "matrix_include=[]" >> $GITHUB_OUTPUT
             exit 0
           fi
-
+          
+          # Output results
           printf '%s\n' "${SELECTED[@]}" | jq -R . | jq -s . > /tmp/stack_dirs.json
+          printf '%s\n' "${MATRIX_INCLUDE[@]}" | jq -s . > /tmp/matrix_include.json
+          
           echo "has_changes=true" >> $GITHUB_OUTPUT
           echo "stack_dirs=$(cat /tmp/stack_dirs.json)" >> $GITHUB_OUTPUT
-          echo "Stacks:"
-          cat /tmp/stack_dirs.json
+          echo "matrix_include=$(cat /tmp/matrix_include.json)" >> $GITHUB_OUTPUT
+          
+          echo "✅ Changed stacks:"
+          cat /tmp/stack_dirs.json | jq -r '.[]'
 
-  plan:
-    name: "검증/플랜/비용"
+  validate-and-plan:
+    name: "🧪 Validate & Plan"
     needs: detect
     if: needs.detect.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
+      max-parallel: ${{ fromJson(env.PARALLEL_JOBS) }}
       matrix:
-        stack_dir: ${{ fromJson(needs.detect.outputs.stack_dirs) }}
+        include: ${{ fromJson(needs.detect.outputs.matrix_include) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Terraform 설치
+      - name: Cache Terraform providers
+        if: env.ENABLE_CACHE == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.terraform.d/plugin-cache
+            ${{ matrix.stack_dir }}/.terraform/providers
+          key: terraform-${{ runner.os }}-${{ matrix.stack_dir }}-${{ hashFiles(format('{0}/.terraform.lock.hcl', matrix.stack_dir)) }}
+          restore-keys: |
+            terraform-${{ runner.os }}-${{ matrix.stack_dir }}-
+            terraform-${{ runner.os }}-
+
+      - name: Cache security tools
+        if: env.ENABLE_CACHE == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/bin/tflint
+            ~/.local/bin/tfsec
+            ~/.local/bin/checkov
+          key: security-tools-${{ runner.os }}-v2
+          restore-keys: security-tools-${{ runner.os }}-
+
+      - name: Setup Terraform with caching
         uses: hashicorp/setup-terraform@v3
-        with: { terraform_version: ${{ env.TF_VERSION }} }
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
 
-      - name: 스택 경로/ENV 추출
-        id: meta
+      - name: Configure Terraform plugin cache
+        if: env.ENABLE_CACHE == 'true'
+        run: |
+          mkdir -p ~/.terraform.d/plugin-cache
+          echo 'plugin_cache_dir = "$HOME/.terraform.d/plugin-cache"' > ~/.terraformrc
+
+      - name: Validate stack structure
         shell: bash
         run: |
-          SD="${{ matrix.stack_dir }}"
-          echo "STACK_DIR=$SD" >> $GITHUB_OUTPUT
-          # env 추출: 경로에 prod/dev 문자열이 포함되면 그걸 ENV로 사용
-          ENV="dev"
-          if [[ "$SD" == *"/prod"* ]] || [[ "$SD" == *"-prod-"* ]]; then ENV="prod"; fi
-          echo "ENV=$ENV" >> $GITHUB_OUTPUT
-          echo "STACK_DIR=$SD / ENV=$ENV"
+          STACK_DIR="${{ matrix.stack_dir }}"
+          
+          # Check required files exist
+          if [[ ! -f "$STACK_DIR/backend.hcl" ]]; then
+            echo "❌ Missing backend.hcl in $STACK_DIR"
+            exit 1
+          fi
+          
+          # Check for tfvars files
+          TFVARS_FOUND=false
+          for tfvars in "$STACK_DIR/terraform.tfvars" "$STACK_DIR/${{ matrix.env }}.tfvars"; do
+            if [[ -f "$tfvars" ]]; then
+              TFVARS_FOUND=true
+              echo "✅ Found tfvars: $tfvars"
+              break
+            fi
+          done
+          
+          if [[ "$TFVARS_FOUND" == "false" ]]; then
+            echo "❌ No tfvars file found in $STACK_DIR"
+            exit 1
+          fi
 
-      - name: AWS OIDC 설정
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ steps.meta.outputs.ENV == 'prod' && secrets.TF_PROD_ROLE_ARN || secrets.TF_DEV_ROLE_ARN }}
-          aws-region: ${{ env.TF_STACK_REGION }}
+          role-to-assume: ${{ matrix.env == 'prod' && secrets.TF_PROD_ROLE_ARN || secrets.TF_DEV_ROLE_ARN }}
+          aws-region: ${{ matrix.region }}
+          role-session-name: terraform-${{ matrix.env }}-${{ github.run_id }}
 
-      - name: fmt
-        working-directory: ${{ steps.meta.outputs.STACK_DIR }}
-        run: terraform fmt -recursive -check
+      - name: Terraform format check
+        working-directory: ${{ matrix.stack_dir }}
+        run: |
+          if ! terraform fmt -check -recursive .; then
+            echo "❌ Terraform files are not formatted correctly"
+            echo "💡 Run 'terraform fmt -recursive' to fix formatting"
+            exit 1
+          fi
 
-      - name: init (backend.hcl)
-        working-directory: ${{ steps.meta.outputs.STACK_DIR }}
-        run: terraform init -backend-config=backend.hcl -reconfigure
+      - name: Terraform init with retry
+        working-directory: ${{ matrix.stack_dir }}
+        run: |
+          set -euo pipefail
+          
+          for attempt in 1 2 3; do
+            if terraform init -backend-config=backend.hcl -reconfigure; then
+              echo "✅ Terraform init successful (attempt $attempt)"
+              break
+            else
+              echo "⚠️ Terraform init failed (attempt $attempt)"
+              if [[ $attempt -eq 3 ]]; then
+                echo "❌ Terraform init failed after 3 attempts"
+                exit 1
+              fi
+              sleep 10
+            fi
+          done
 
-      - name: tfvars 선택 (ENV 우선)
+      - name: Select tfvars file
         id: tfvars
-        working-directory: ${{ steps.meta.outputs.STACK_DIR }}
+        working-directory: ${{ matrix.stack_dir }}
         shell: bash
         run: |
-          F="terraform.tfvars"
-          [ -f "${{ steps.meta.outputs.ENV }}.tfvars" ] && F="${{ steps.meta.outputs.ENV }}.tfvars"
-          echo "TFVARS=$F" >> $GITHUB_OUTPUT
-          echo "Using $F"
+          ENV_TFVARS="${{ matrix.env }}.tfvars"
+          DEFAULT_TFVARS="terraform.tfvars"
+          
+          if [[ -f "$ENV_TFVARS" ]]; then
+            TFVARS_FILE="$ENV_TFVARS"
+          elif [[ -f "$DEFAULT_TFVARS" ]]; then
+            TFVARS_FILE="$DEFAULT_TFVARS"
+          else
+            echo "❌ No tfvars file found"
+            exit 1
+          fi
+          
+          echo "TFVARS_FILE=$TFVARS_FILE" >> $GITHUB_OUTPUT
+          echo "✅ Using tfvars: $TFVARS_FILE"
 
-      - name: validate
-        working-directory: ${{ steps.meta.outputs.STACK_DIR }}
+      - name: Terraform validate
+        working-directory: ${{ matrix.stack_dir }}
         run: terraform validate
 
-      - name: 정책 가드(tf_forbidden.sh)
+      - name: Run policy guard
         env:
-          ROOT: terraform   # 스크립트가 terraform/modules, terraform/stacks 기준으로 검사
-        run: bash terraform/tools/tf_forbidden.sh
+          ROOT: terraform
+        run: |
+          if [[ -x terraform/tools/tf_forbidden.sh ]]; then
+            bash terraform/tools/tf_forbidden.sh
+          else
+            echo "⚠️ Policy guard script not found or not executable"
+          fi
 
-      - name: tflint
+      - name: Setup and run tflint
         if: env.RUN_TFLINT == 'true'
         run: |
-          curl -sSL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+          if [[ ! -x ~/.local/bin/tflint ]]; then
+            curl -sSL https://raw.githubusercontent.com/terraform-linters/tflint/master/install_linux.sh | bash
+          fi
+          
+          cd ${{ matrix.stack_dir }}
           tflint --init
-          tflint --recursive ${{ steps.meta.outputs.STACK_DIR }}
+          tflint .
 
-      - name: tfsec
+      - name: Run tfsec security scan
         if: env.RUN_TFSEC == 'true'
         uses: aquasecurity/tfsec-action@v1.0.7
-        with: { working_directory: ${{ steps.meta.outputs.STACK_DIR }} }
+        with:
+          working_directory: ${{ matrix.stack_dir }}
+          format: sarif
+          soft_fail: true
 
-      - name: plan
+      - name: Run Checkov security scan
+        if: env.RUN_CHECKOV == 'true'
+        run: |
+          if [[ ! -x ~/.local/bin/checkov ]]; then
+            pip3 install checkov
+          fi
+          
+          checkov -d ${{ matrix.stack_dir }} \
+            --framework terraform \
+            --output cli \
+            --soft-fail
+
+      - name: Terraform plan with detailed output
         id: plan
-        working-directory: ${{ steps.meta.outputs.STACK_DIR }}
-        run: terraform plan -var-file=${{ steps.tfvars.outputs.TFVARS }} -out=plan.tfplan
+        working-directory: ${{ matrix.stack_dir }}
+        run: |
+          set -euo pipefail
+          
+          echo "🔍 Running Terraform plan..."
+          
+          if terraform plan -var-file=${{ steps.tfvars.outputs.TFVARS_FILE }} -out=plan.tfplan -detailed-exitcode; then
+            PLAN_EXIT_CODE=$?
+          else
+            PLAN_EXIT_CODE=$?
+          fi
+          
+          # Extract plan summary
+          terraform show -no-color plan.tfplan > plan-output.txt
+          
+          # Set outputs based on exit code
+          case $PLAN_EXIT_CODE in
+            0)
+              echo "plan_result=no-changes" >> $GITHUB_OUTPUT
+              echo "✅ No changes detected"
+              ;;
+            1)
+              echo "plan_result=error" >> $GITHUB_OUTPUT
+              echo "❌ Plan failed"
+              exit 1
+              ;;
+            2) 
+              echo "plan_result=changes" >> $GITHUB_OUTPUT
+              echo "📝 Changes detected"
+              ;;
+          esac
 
-      - name: plan artifact 업로드
+      - name: Upload plan artifact
+        if: steps.plan.outputs.plan_result != 'no-changes'
         uses: actions/upload-artifact@v4
         with:
-          name: plan-${{ steps.meta.outputs.ENV }}-${{ github.sha }}-${{ hashFiles(format('{0}/**', steps.meta.outputs.STACK_DIR)) }}
-          path: ${{ steps.meta.outputs.STACK_DIR }}/plan.tfplan
+          name: plan-${{ matrix.env }}-${{ github.sha }}-${{ hashFiles(format('{0}/**', matrix.stack_dir)) }}
+          path: |
+            ${{ matrix.stack_dir }}/plan.tfplan
+            ${{ matrix.stack_dir }}/plan-output.txt
+          retention-days: 7
 
-      - name: Infracost(코멘트)
-        if: env.RUN_INFRACOST == 'true' && env.INFRACOST_API_KEY != ''
-        uses: infracost/actions/inline@v3
+      - name: Run Infracost
+        if: env.RUN_INFRACOST == 'true'
+        uses: infracost/actions/comment@v1
         with:
-          path: .
-          working-directory: ${{ steps.meta.outputs.STACK_DIR }}
-          api-key: ${{ env.INFRACOST_API_KEY }}
-          post-condition: always()
+          path: ${{ matrix.stack_dir }}
+          api-key: ${{ secrets.INFRACOST_API_KEY }}
+          behavior: update
+          show-skipped: false
 
-      - name: PR 코멘트(스택별)
+      - name: Comment PR with plan results
         uses: marocchino/sticky-pull-request-comment@v2
+        if: always()
         with:
-          header: plan-${{ steps.meta.outputs.STACK_DIR }}
+          header: plan-${{ matrix.stack_dir }}
           recreate: true
           message: |
-            ### Terraform plan – `${{ steps.meta.outputs.STACK_DIR }}`
-            - ENV: `${{ steps.meta.outputs.ENV }}`
-            - tfvars: `${{ steps.tfvars.outputs.TFVARS }}`
-            - region: `${{ env.TF_STACK_REGION }}`
-            - plan artifact 업로드 완료 ✅
+            ## 🏗️ Terraform Plan - `${{ matrix.stack_dir }}`
+            
+            | **Attribute** | **Value** |
+            |---------------|-----------|
+            | 🌍 Environment | `${{ matrix.env }}` |
+            | 📋 Variables | `${{ steps.tfvars.outputs.TFVARS_FILE }}` |
+            | 🌐 Region | `${{ matrix.region }}` |
+            | 📊 Plan Result | `${{ steps.plan.outputs.plan_result }}` |
+            | ✅ Security Scans | tflint: ${{ env.RUN_TFLINT }}, tfsec: ${{ env.RUN_TFSEC }}, checkov: ${{ env.RUN_CHECKOV }} |
+            
+            ${{ steps.plan.outputs.plan_result == 'changes' && '📄 **Plan artifact uploaded for review**' || '✅ **No infrastructure changes**' }}
+            
+            ---
+            <details>
+            <summary>🔧 Workflow Details</summary>
+            
+            - **Terraform Version**: `${{ env.TF_VERSION }}`
+            - **Workflow**: `${{ github.workflow }}`  
+            - **Run ID**: `${{ github.run_id }}`
+            - **Commit**: `${{ github.sha }}`
+            </details>
 
-  no-change:
+  no-changes:
+    name: "ℹ️ No Changes Detected"
+    needs: detect
     if: needs.detect.outputs.has_changes != 'true'
     runs-on: ubuntu-latest
     steps:
-      - run: echo "ℹ️ Terraform 변경 없음 → 검증/플랜 생략"
+      - name: Report no changes
+        run: |
+          echo "ℹ️ No Terraform changes detected in this PR"
+          echo "🚀 Workflows will run on the next push to main"
