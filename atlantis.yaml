@@ -39,44 +39,8 @@ workflows:
             echo "❌ Plan failed - sending Slack notification"
           fi
 
-          # Send Slack notification with AI-REVIEW trigger and JSON metadata
-          SLACK_MESSAGE="{
-            \"text\": \"[AI-REVIEW] 🏗️ Terraform Plan $PLAN_STATUS\",
-            \"attachments\": [
-              {
-                \"color\": \"$PLAN_COLOR\",
-                \"title\": \"🏗️ Terraform Plan $PLAN_STATUS\",
-                \"title_link\": \"$PR_URL\",
-                \"fields\": [
-                  {
-                    \"title\": \"Repository\",
-                    \"value\": \"$REPO_ORG/$REPO_NAME\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"PR Number\",
-                    \"value\": \"$PR_NUM\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Commit\",
-                    \"value\": \"$COMMIT_SHA\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Timestamp\",
-                    \"value\": \"$TIMESTAMP\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Metadata\",
-                    \"value\": \"\`\`\`json\n{\\"action\\":\\"plan\\",\\"status\\":\\"$PLAN_STATUS\\",\\"repository\\":\\"$REPO_ORG/$REPO_NAME\\",\\"pr\\":$PR_NUM,\\"commit\\":\\"$COMMIT_SHA\\",\\"timestamp\\":\\"$TIMESTAMP\\"}\n\`\`\`\",
-                    \"short\": false
-                  }
-                ]
-              }
-            ]
-          }"
+          # Send simple Slack notification for testing
+          SLACK_MESSAGE="{\"text\": \"[AI-REVIEW] 🏗️ Terraform Plan $PLAN_STATUS for $REPO_ORG/$REPO_NAME PR #$PR_NUM\"}"
 
           # Debug: Check if SLACK_WEBHOOK_URL is set
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
@@ -137,49 +101,8 @@ workflows:
             echo "❌ Apply failed - sending Slack notification"
           fi
 
-          # Send Slack notification with AI-REVIEW trigger and JSON metadata
-          SLACK_MESSAGE="{
-            \"text\": \"[AI-REVIEW] 🚀 Terraform Apply $APPLY_STATUS\",
-            \"attachments\": [
-              {
-                \"color\": \"$APPLY_COLOR\",
-                \"title\": \"🚀 Terraform Apply $APPLY_STATUS\",
-                \"title_link\": \"$PR_URL\",
-                \"fields\": [
-                  {
-                    \"title\": \"Repository\",
-                    \"value\": \"$REPO_ORG/$REPO_NAME\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"PR Number\",
-                    \"value\": \"$PR_NUM\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Commit\",
-                    \"value\": \"$COMMIT_SHA\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Timestamp\",
-                    \"value\": \"$TIMESTAMP\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Exit Code\",
-                    \"value\": \"$APPLY_EXIT_CODE\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Metadata\",
-                    \"value\": \"\`\`\`json\n{\\"action\\":\\"apply\\",\\"status\\":\\"$APPLY_STATUS\\",\\"repository\\":\\"$REPO_ORG/$REPO_NAME\\",\\"pr\\":$PR_NUM,\\"commit\\":\\"$COMMIT_SHA\\",\\"timestamp\\":\\"$TIMESTAMP\\",\\"exit_code\\":$APPLY_EXIT_CODE}\n\`\`\`\",
-                    \"short\": false
-                  }
-                ]
-              }
-            ]
-          }"
+          # Send simple Slack notification for testing
+          SLACK_MESSAGE="{\"text\": \"[AI-REVIEW] 🚀 Terraform Apply $APPLY_STATUS for $REPO_ORG/$REPO_NAME PR #$PR_NUM (Exit Code: $APPLY_EXIT_CODE)\"}"
 
           # Debug: Check if SLACK_WEBHOOK_URL is set
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
