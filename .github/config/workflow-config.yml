@@ -31,11 +31,13 @@ performance:
     terraform_providers: true
     tools: true
   parallel_execution: true
+  max_parallel_jobs: 3
   
 quality:
   tools:
     tflint: "latest"
     tfsec: "latest"
+    checkov: "latest"
     infracost: "optional"
   
 validation:

@@ -141,7 +141,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      max-parallel: ${{ fromJson(env.PARALLEL_JOBS) }}
+      max-parallel: 3
       matrix:
         include: ${{ fromJson(needs.detect.outputs.matrix_include) }}
 
