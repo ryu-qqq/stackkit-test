@@ -362,7 +362,7 @@ workflows:
       steps:
       - init
       - plan:
-          extra_args: ["-lock-timeout=10m", "-out=\$PLANFILE"]
+          extra_args: ["-lock-timeout=10m", "-out=terraform-plan.tfplan"]
       - run: |
           set -e
 
@@ -375,7 +375,7 @@ workflows:
           PR_URL="https://github.com/\${BASE_REPO_OWNER}/\${BASE_REPO_NAME}/pull/\${PR_NUM}"
 
           # Check if plan was successful
-          if [ -f "\$PLANFILE" ]; then
+          if [ -f "terraform-plan.tfplan" ]; then
             PLAN_STATUS="succeeded"
             PLAN_COLOR="good"
             echo "✅ Plan succeeded - sending Slack notification"
@@ -433,7 +433,7 @@ workflows:
     apply:
       steps:
       - apply:
-          extra_args: ["-lock-timeout=10m"]
+          extra_args: ["-lock-timeout=10m", "-input=false", "terraform-plan.tfplan"]
       - run: |
           set -e
 
@@ -529,11 +529,11 @@ workflows:
       steps:
       - init
       - plan:
-          extra_args: ["-lock-timeout=10m"]
+          extra_args: ["-lock-timeout=10m", "-out=terraform-plan.tfplan"]
     apply:
       steps:
       - apply:
-          extra_args: ["-lock-timeout=10m"]
+          extra_args: ["-lock-timeout=10m", "-input=false", "terraform-plan.tfplan"]
 YAML
 fi
 
