@@ -385,39 +385,23 @@ workflows:
             echo "❌ Plan failed - sending Slack notification"
           fi
 
-          # Send Slack notification with AI-REVIEW trigger and JSON metadata
+          # Send simplified Slack notification for reliable delivery and easy bot parsing
           SLACK_MESSAGE="{
-            \"text\": \"[AI-REVIEW] 🏗️ Terraform Plan \$PLAN_STATUS\",
-            \"attachments\": [
+            \"text\": \"[AI-REVIEW] 🏗️ Terraform Plan \$PLAN_STATUS for \$REPO_ORG/\$REPO_NAME PR #\$PR_NUM\",
+            \"blocks\": [
               {
-                \"color\": \"\$PLAN_COLOR\",
-                \"title\": \"🏗️ Terraform Plan \$PLAN_STATUS\",
-                \"title_link\": \"\$PR_URL\",
-                \"fields\": [
+                \"type\": \"section\",
+                \"text\": {
+                  \"type\": \"mrkdwn\",
+                  \"text\": \"[AI-REVIEW] 🏗️ *Terraform Plan \$PLAN_STATUS* for \`\$REPO_ORG/\$REPO_NAME\` <\$PR_URL|PR #\$PR_NUM>\"
+                }
+              },
+              {
+                \"type\": \"context\",
+                \"elements\": [
                   {
-                    \"title\": \"Repository\",
-                    \"value\": \"\$REPO_ORG/\$REPO_NAME\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"PR Number\",
-                    \"value\": \"\$PR_NUM\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Commit\",
-                    \"value\": \"\$COMMIT_SHA\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Timestamp\",
-                    \"value\": \"\$TIMESTAMP\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Metadata\",
-                    \"value\": \"\\\`\\\`\\\`json\\n{\\\"action\\\":\\\"plan\\\",\\\"status\\\":\\\"\$PLAN_STATUS\\\",\\\"repository\\\":\\\"\$REPO_ORG/\$REPO_NAME\\\",\\\"pr\\\":\$PR_NUM,\\\"commit\\\":\\\"\$COMMIT_SHA\\\",\\\"timestamp\\\":\\\"\$TIMESTAMP\\\"}\\n\\\`\\\`\\\`\",
-                    \"short\": false
+                    \"type\": \"plain_text\",
+                    \"text\": \"action=plan|status=\$PLAN_STATUS|repo=\$REPO_ORG/\$REPO_NAME|pr=\$PR_NUM|commit=\$COMMIT_SHA|time=\$TIMESTAMP\"
                   }
                 ]
               }
@@ -458,44 +442,23 @@ workflows:
             echo "❌ Apply failed - sending Slack notification"
           fi
 
-          # Send Slack notification with AI-REVIEW trigger and JSON metadata
+          # Send simplified Slack notification for reliable delivery and easy bot parsing
           SLACK_MESSAGE="{
-            \"text\": \"[AI-REVIEW] 🚀 Terraform Apply \$APPLY_STATUS\",
-            \"attachments\": [
+            \"text\": \"[AI-REVIEW] 🚀 Terraform Apply \$APPLY_STATUS for \$REPO_ORG/\$REPO_NAME PR #\$PR_NUM\",
+            \"blocks\": [
               {
-                \"color\": \"\$APPLY_COLOR\",
-                \"title\": \"🚀 Terraform Apply \$APPLY_STATUS\",
-                \"title_link\": \"\$PR_URL\",
-                \"fields\": [
+                \"type\": \"section\",
+                \"text\": {
+                  \"type\": \"mrkdwn\",
+                  \"text\": \"[AI-REVIEW] 🚀 *Terraform Apply \$APPLY_STATUS* for \`\$REPO_ORG/\$REPO_NAME\` <\$PR_URL|PR #\$PR_NUM>\"
+                }
+              },
+              {
+                \"type\": \"context\",
+                \"elements\": [
                   {
-                    \"title\": \"Repository\",
-                    \"value\": \"\$REPO_ORG/\$REPO_NAME\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"PR Number\",
-                    \"value\": \"\$PR_NUM\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Commit\",
-                    \"value\": \"\$COMMIT_SHA\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Timestamp\",
-                    \"value\": \"\$TIMESTAMP\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Exit Code\",
-                    \"value\": \"\$APPLY_EXIT_CODE\",
-                    \"short\": true
-                  },
-                  {
-                    \"title\": \"Metadata\",
-                    \"value\": \"\\\`\\\`\\\`json\\n{\\\"action\\\":\\\"apply\\\",\\\"status\\\":\\\"\$APPLY_STATUS\\\",\\\"repository\\\":\\\"\$REPO_ORG/\$REPO_NAME\\\",\\\"pr\\\":\$PR_NUM,\\\"commit\\\":\\\"\$COMMIT_SHA\\\",\\\"timestamp\\\":\\\"\$TIMESTAMP\\\",\\\"exit_code\\\":\$APPLY_EXIT_CODE}\\n\\\`\\\`\\\`\",
-                    \"short\": false
+                    \"type\": \"plain_text\",
+                    \"text\": \"action=apply|status=\$APPLY_STATUS|repo=\$REPO_ORG/\$REPO_NAME|pr=\$PR_NUM|commit=\$COMMIT_SHA|exit_code=\$APPLY_EXIT_CODE|time=\$TIMESTAMP\"
                   }
                 ]
               }
