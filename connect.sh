@@ -411,7 +411,7 @@ workflows:
           fi
 
           # Infracost analysis for cost impact
-          if [ -n "\$INFRACOST_API_KEY" ] && [ -f "\$PLANFILE" ]; then
+          if [ -n "\$INFRACOST_API_KEY" ] && [ -f "\$PLANFILE" ] && command -v infracost >/dev/null 2>&1; then
             echo "💰 Infracost 비용 분석 시작..."
 
             # Generate JSON plan for Infracost
@@ -456,13 +456,13 @@ workflows:
 
           # Send enhanced Slack notification with change analysis for bot processing
           SLACK_MESSAGE="{
-            \"text\": \"[AI-REVIEW] 🏗️ Terraform Plan \$PLAN_STATUS for \$REPO_ORG/\$REPO_NAME PR #\$PR_NUM\",
+            \"text\": \"🏗️ Terraform Plan \$PLAN_STATUS for \$REPO_ORG/\$REPO_NAME PR #\$PR_NUM\",
             \"blocks\": [
               {
                 \"type\": \"section\",
                 \"text\": {
                   \"type\": \"mrkdwn\",
-                  \"text\": \"[AI-REVIEW] 🏗️ *Terraform Plan \$PLAN_STATUS* for \`\$REPO_ORG/\$REPO_NAME\` <\$PR_URL|PR #\$PR_NUM>\"
+                  \"text\": \"🏗️ *Terraform Plan \$PLAN_STATUS* for \`\$REPO_ORG/\$REPO_NAME\` <\$PR_URL|PR #\$PR_NUM>\"
                 }
               },
               {
@@ -513,13 +513,13 @@ workflows:
 
           # Send simplified Slack notification for reliable delivery and easy bot parsing
           SLACK_MESSAGE="{
-            \"text\": \"[AI-REVIEW] 🚀 Terraform Apply \$APPLY_STATUS for \$REPO_ORG/\$REPO_NAME PR #\$PR_NUM\",
+            \"text\": \"🚀 Terraform Apply \$APPLY_STATUS for \$REPO_ORG/\$REPO_NAME PR #\$PR_NUM\",
             \"blocks\": [
               {
                 \"type\": \"section\",
                 \"text\": {
                   \"type\": \"mrkdwn\",
-                  \"text\": \"[AI-REVIEW] 🚀 *Terraform Apply \$APPLY_STATUS* for \`\$REPO_ORG/\$REPO_NAME\` <\$PR_URL|PR #\$PR_NUM>\"
+                  \"text\": \"🚀 *Terraform Apply \$APPLY_STATUS* for \`\$REPO_ORG/\$REPO_NAME\` <\$PR_URL|PR #\$PR_NUM>\"
                 }
               },
               {
