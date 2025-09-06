@@ -590,9 +590,24 @@ EOF
         jq -r ".[] | select(.config.url == \"$webhook_url\") | .id" 2>/dev/null || echo "")
 
     if [[ -n "$existing_webhook" ]]; then
-        log_success "기존 웹훅 발견 (ID: $existing_webhook). 시크릿을 업데이트합니다."
+        log_success "기존 웹훅 발견 (ID: $existing_webhook). 설정을 업데이트합니다."
+        
+        # Get current webhook details for comparison
+        local current_webhook=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/$REPO_NAME/hooks/$existing_webhook")
+        
+        local current_active=$(echo "$current_webhook" | jq -r '.active // false')
+        local current_events=$(echo "$current_webhook" | jq -r '.events | sort | join(",")')
+        local new_events=$(echo '["issue_comment","pull_request","pull_request_review","pull_request_review_comment","push"]' | jq -r 'sort | join(",")')
+        
+        log_info "웹훅 설정 비교:"
+        echo "  - 활성화 상태: $current_active → true"
+        echo "  - 이벤트: $(echo "$current_events" | cut -c1-50)..."
+        echo "  - URL: $webhook_url"
+        echo "  - 시크릿: 업데이트됨"
 
-        # Update existing webhook with new secret
+        # Update existing webhook with complete configuration
         local response=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
@@ -617,6 +632,13 @@ EOF
     local response_body=$(echo "$response" | sed '/HTTP_STATUS:/d')
 
     case $http_status in
+        200)
+            log_success "기존 GitHub 웹훅이 성공적으로 업데이트되었습니다!"
+            local webhook_id=$(echo "$response_body" | jq -r '.id')
+            echo "   - 웹훅 ID: $webhook_id"
+            echo "   - URL: $webhook_url"
+            echo "   - 상태: 활성화됨"
+            ;;
         201)
             log_success "GitHub 웹훅이 성공적으로 생성되었습니다!"
             local webhook_id=$(echo "$response_body" | jq -r '.id')
