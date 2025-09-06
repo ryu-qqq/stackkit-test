@@ -90,7 +90,7 @@ workflows:
     apply:
       steps:
       - apply:
-          extra_args: ["-lock-timeout=10m"]
+          extra_args: ["-lock-timeout=10m", "terraform-plan.tfplan"]
       - run: |
           set -e
 
