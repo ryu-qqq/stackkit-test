@@ -16,7 +16,7 @@ workflows:
       steps:
       - init
       - plan:
-          extra_args: ["-lock-timeout=10m", "-out=$PLANFILE"]
+          extra_args: ["-lock-timeout=10m", "-out=terraform-plan.tfplan"]
       - run: |
           set -e
 
@@ -29,14 +29,19 @@ workflows:
           PR_URL="https://github.com/${BASE_REPO_OWNER}/${BASE_REPO_NAME}/pull/${PR_NUM}"
 
           # Check if plan was successful
-          if [ -f "$PLANFILE" ]; then
+          PLAN_FILE="terraform-plan.tfplan"
+          echo "🔍 Checking for plan file: $PLAN_FILE"
+          echo "Current directory: $(pwd)"
+          echo "Files in directory: $(ls -la *.tfplan 2>/dev/null || echo 'No .tfplan files found')"
+          
+          if [ -f "$PLAN_FILE" ]; then
             PLAN_STATUS="succeeded"
             PLAN_COLOR="good"
-            echo "✅ Plan succeeded - sending Slack notification"
+            echo "✅ Plan succeeded - found plan file: $PLAN_FILE"
           else
             PLAN_STATUS="failed"
             PLAN_COLOR="danger"
-            echo "❌ Plan failed - sending Slack notification"
+            echo "❌ Plan failed - plan file not found: $PLAN_FILE"
           fi
 
           # Send Slack notification with AI-REVIEW trigger and JSON metadata

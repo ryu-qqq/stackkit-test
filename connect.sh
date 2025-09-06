@@ -84,7 +84,7 @@ EOF
 # Default values (StackKit 표준 호환)
 ATLANTIS_URL=""
 REPO_NAME=""
-PROJECT_DIR="."
+PROJECT_DIR=""  # 자동 감지하도록 빈 값으로 설정
 GITHUB_TOKEN=""
 WEBHOOK_SECRET=""
 SECRET_NAME=""
@@ -143,6 +143,71 @@ fi
 
 
 show_banner
+
+# StackKit 표준 구조 자동 감지
+detect_terraform_structure() {
+    if [[ -z "$PROJECT_DIR" ]]; then
+        log_info "🔍 StackKit 표준 Terraform 구조 자동 감지 중..."
+
+        # StackKit 표준 경로들 검사
+        local candidates=(
+            "terraform/stacks"
+            "terraform"
+            "."
+        )
+
+        local found_stacks=()
+
+        # terraform/stacks 구조 우선 검사
+        if [[ -d "terraform/stacks" ]]; then
+            log_info "terraform/stacks 디렉토리 발견, 스택 검사 중..."
+
+            # backend.hcl이 있는 스택 디렉토리 찾기
+            while IFS= read -r -d '' stack_dir; do
+                found_stacks+=("$(dirname "$stack_dir")")
+            done < <(find terraform/stacks -name "backend.hcl" -type f -print0 2>/dev/null || true)
+
+            if [[ ${#found_stacks[@]} -gt 0 ]]; then
+                # 첫 번째 스택을 기본값으로 사용
+                PROJECT_DIR="${found_stacks[0]}"
+                log_success "StackKit 스택 자동 감지: $PROJECT_DIR"
+
+                if [[ ${#found_stacks[@]} -gt 1 ]]; then
+                    log_info "추가 스택 발견:"
+                    for ((i=1; i<${#found_stacks[@]}; i++)); do
+                        echo "  - ${found_stacks[$i]}"
+                    done
+                    log_warning "첫 번째 스택을 사용합니다. 다른 스택은 --project-dir로 지정하세요."
+                fi
+                return 0
+            fi
+        fi
+
+        # 일반 terraform 디렉토리 검사
+        if [[ -d "terraform" ]] && [[ -f "terraform/main.tf" || -f "terraform/versions.tf" ]]; then
+            PROJECT_DIR="terraform"
+            log_success "일반 Terraform 구조 감지: $PROJECT_DIR"
+            return 0
+        fi
+
+        # 루트 디렉토리에서 Terraform 파일 검사
+        if [[ -f "main.tf" || -f "versions.tf" ]]; then
+            PROJECT_DIR="."
+            log_success "루트 Terraform 구조 감지: $PROJECT_DIR"
+            return 0
+        fi
+
+        # 아무것도 찾지 못한 경우
+        log_warning "Terraform 파일을 찾을 수 없습니다."
+        log_info "다음 중 하나를 수행하세요:"
+        echo "  1. --project-dir로 Terraform 디렉토리 직접 지정"
+        echo "  2. terraform/stacks/프로젝트명/ 구조로 파일 정리"
+        echo "  3. 루트에 main.tf 파일 생성"
+
+        PROJECT_DIR="."
+        return 1
+    fi
+}
 
 # Sync webhook secret with Atlantis Secrets Manager
 sync_webhook_secret() {
@@ -216,6 +281,9 @@ if [[ -n "$ATLANTIS_GITHUB_TOKEN" ]]; then
     GITHUB_TOKEN="$ATLANTIS_GITHUB_TOKEN"
     log_info "ATLANTIS_GITHUB_TOKEN 환경변수 사용"
 fi
+
+# StackKit 표준 구조 자동 감지 실행
+detect_terraform_structure
 
 sync_webhook_secret
 
@@ -591,16 +659,16 @@ EOF
 
     if [[ -n "$existing_webhook" ]]; then
         log_success "기존 웹훅 발견 (ID: $existing_webhook). 설정을 업데이트합니다."
-        
+
         # Get current webhook details for comparison
         local current_webhook=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/$REPO_NAME/hooks/$existing_webhook")
-        
+
         local current_active=$(echo "$current_webhook" | jq -r '.active // false')
         local current_events=$(echo "$current_webhook" | jq -r '.events | sort | join(",")')
         local new_events=$(echo '["issue_comment","pull_request","pull_request_review","pull_request_review_comment","push"]' | jq -r 'sort | join(",")')
-        
+
         log_info "웹훅 설정 비교:"
         echo "  - 활성화 상태: $current_active → true"
         echo "  - 이벤트: $(echo "$current_events" | cut -c1-50)..."
